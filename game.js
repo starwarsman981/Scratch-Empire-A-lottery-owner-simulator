@@ -13,12 +13,6 @@ function getGameDate(weeksPassed) {
     return gameDate.toLocaleDateString('en-US', options);
 }
 // ---------------------------------------------
-
-const gameState = {
-    budget: 50000,
-    week: 1, 
-    // ... rest of your state
-};
 const GameState = {
     // Calendar system - starting January 1, 2026
     currentDate: new Date(2026, 0, 1), // Jan 1, 2026
@@ -26,6 +20,8 @@ const GameState = {
     budget: 2000000,
     
     games: [],
+    retailers: [], // Keep this empty or just for HQ
+    chains: [],
     retailers: [
         {
             id: 'hq',
@@ -36,8 +32,10 @@ const GameState = {
             commission: 0
         }
     ],
-    
-    marketingCampaigns: [],
+    pullTabConfig: {
+        payoutRate: 0.75, // We pay out 75% to players (House keeps 25%)
+        active: false
+    },
     
     stats: {
         weeklyRevenue: 0,
@@ -48,7 +46,36 @@ const GameState = {
         reputation: 0, // 0-100 scale
         playerCount: 0
     },
-    
+    financials: {
+        currentWeek: {
+            scratchSales: 0,
+            scratchPayouts: 0,
+            instaplaySales: 0,   // <--- NEW
+            instaplayPayouts: 0, // <--- NEW
+            pullTabHandle: 0,
+            pullTabPayouts: 0,
+            commissions: 0,
+            printing: 0,      
+            infrastructure: 0,
+            maintenance: 0,   
+            staffing: 0,      
+            marketing: 0      
+        },
+        history: {
+            scratchSales: 0,
+            scratchPayouts: 0,
+            instaplaySales: 0,   // <--- NEW
+            instaplayPayouts: 0, // <--- NEW
+            pullTabHandle: 0,
+            pullTabPayouts: 0,
+            commissions: 0,
+            printing: 0,
+            infrastructure: 0,
+            maintenance: 0,
+            staffing: 0,
+            marketing: 0
+        }
+    },
     history: {
         events: [
             {
@@ -113,6 +140,11 @@ function advanceWeek() {
     
     // Calculate weekly operations
     const weekResults = simulateWeek(holiday);
+    GameState.financials.currentWeek = {
+        scratchSales: 0, pullTabHandle: 0, scratchPayouts: 0, pullTabPayouts: 0,
+        commissions: 0, printing: 0, infrastructure: 0, maintenance: 0, 
+        staffing: 0, marketing: 0
+    };
     
     // Update game state
     GameState.budget += weekResults.netChange;
@@ -152,49 +184,108 @@ function advanceWeek() {
 }
 
 function simulateWeek(holiday) {
-    const results = {
-        revenue: 0,
-        prizesPaid: 0,
-        operatingCosts: 25000, // Base monthly overhead divided by weeks
-        spending: 25000,
-        netChange: 0,
-        events: []
-    };
-    
     const holidayBoost = holiday ? holiday.boost : 1.0;
     
-    // 1. Process Active Games
+    // Safety check for new save files
+    if (!GameState.financials.currentWeek.instaplaySales) {
+        GameState.financials.currentWeek.instaplaySales = 0;
+        GameState.financials.currentWeek.instaplayPayouts = 0;
+    }
+    const ledger = GameState.financials.currentWeek;
+    
+    const results = { revenue: 0, spending: 0, netChange: 0, events: [] };
+    
+    // 1. Staffing & Operations
+    const activeGamesCount = GameState.games.filter(g => g.active).length;
+    const activeRetailerCount = getTotalActiveStores();
+    const staffingCost = 20000 + (activeGamesCount * 1000) + (activeRetailerCount * 100);
+    ledger.staffing += staffingCost;
+    
+    // 2. Process Scratch Tickets
     GameState.games.forEach(game => {
-        if (game.active && game.inventory > 0) {
-            // Run sales calculation
-            const gameStats = simulateGameSales(game, holidayBoost);
+        if (game.active && game.inventory > 0 && game.type === 'scratch') {
+            const stats = simulateGameSales(game, holidayBoost);
+            ledger.scratchSales += stats.revenue;
+            ledger.scratchPayouts += stats.prizesPaid;
             
-            // Add to Weekly Totals (For the Weekly Summary)
-            results.revenue += gameStats.revenue;
-            results.prizesPaid += gameStats.prizesPaid;
-            
-            // Notifications
-            if (gameStats.bigWinner) {
-                results.events.push({
-                    title: `JACKPOT CLAIMED!`,
-                    description: `A player won the $${game.topPrize.toLocaleString()} top prize on ${game.name}!`
-                });
+            if (stats.bigWinner) {
+                results.events.push({ title: `SCRATCH WINNER!`, description: `$${game.topPrize.toLocaleString()} won on ${game.name}!` });
             }
-            
             if (game.inventory < 5000) {
+                results.events.push({ title: `Low Stock`, description: `${game.name} is nearly empty.` });
+            }
+        }
+    });
+
+    // 3. Process Instaplay Games (NEW SEPARATE LOGIC)
+    GameState.games.forEach(game => {
+        if (game.active && game.type === 'instaplay') {
+            // This function calculates sales based strictly on 'lottoMachines' count
+            const ipStats = simulateInstaplaySales(game, holidayBoost);
+            
+            // SEPARATE BUCKETS
+            ledger.instaplaySales += ipStats.revenue;
+            ledger.instaplayPayouts += ipStats.prizesPaid;
+
+            if (ipStats.jackpotHit) {
                 results.events.push({
-                    title: `Low Stock Warning`,
-                    description: `${game.name} is nearly sold out (${game.inventory} left).`
+                    title: `INSTAPLAY JACKPOT!`,
+                    description: `$${Math.round(ipStats.prizesPaid).toLocaleString()} won on ${game.name}!`
                 });
             }
         }
     });
     
-    // 2. Retailer Simulation (Simplified for now)
-    // Later we can track sales per retailer, for now they just enable sales
+    // 4. Process Pull Tabs
+    const ptStats = simulatePullTabs(holidayBoost);
+    ledger.pullTabHandle += ptStats.handle;
+    ledger.pullTabPayouts += ptStats.payouts;
+    ledger.maintenance += ptStats.maintenance;
     
-    // 3. Final Calculations
-    results.netChange = results.revenue - results.prizesPaid - results.operatingCosts;
+    // 5. Calculate Lotto Machine Upkeep
+    let totalLottoMachines = 0;
+    GameState.chains.forEach(c => totalLottoMachines += (c.lottoMachines || 0));
+    ledger.maintenance += (totalLottoMachines * 10); // $10/week upkeep
+
+    // 6. Calculate Commissions
+    let totalWeekCommissions = 0;
+    const totalRev = ledger.scratchSales + ledger.pullTabHandle + ledger.instaplaySales; // Include Instaplay in commissionable revenue
+    
+    GameState.chains.forEach(chain => {
+        if (chain.activeStores > 0) {
+            const commRate = chain.contract ? chain.contract.commission : 0.05;
+            const chainShare = chain.activeStores / getTotalActiveStores();
+            const chainEstSales = totalRev * chainShare;
+            const chainComm = chainEstSales * commRate;
+            
+            totalWeekCommissions += chainComm;
+            
+            // Update Chain Stats
+            if(!chain.stats) chain.stats = { totalSales: 0, totalCommission: 0, totalProfit: 0 };
+            chain.stats.totalSales += chainEstSales;
+            chain.stats.totalCommission += chainComm;
+            chain.stats.totalProfit += (chainEstSales - chainComm);
+        }
+    });
+    ledger.commissions += totalWeekCommissions;
+
+    // 7. Final Totals
+    const totalRevenue = ledger.scratchSales + ledger.pullTabHandle + ledger.instaplaySales;
+    const totalExpenses = ledger.scratchPayouts + ledger.pullTabPayouts + ledger.instaplayPayouts + ledger.commissions + ledger.printing + ledger.infrastructure + ledger.maintenance + ledger.staffing + ledger.marketing;
+    
+    const netProfit = totalRevenue - totalExpenses;
+    
+    // Update History
+    const history = GameState.financials.history;
+    for (const [key, value] of Object.entries(ledger)) {
+        if (history[key] !== undefined) history[key] += value;
+        // Handle new keys if old save
+        else history[key] = value;
+    }
+    
+    results.revenue = totalRevenue;
+    results.spending = totalExpenses;
+    results.netChange = netProfit;
     
     return results;
 }
@@ -207,67 +298,83 @@ function simulateGameSales(game, holidayBoost) {
         bigWinner: null
     };
     
-    // 1. SALES VOLUME (Demand Logic)
-    const retailerCount = GameState.retailers.length;
-    let demand = retailerCount * 120 * holidayBoost; 
+    // 1. DETERMINE DEMAND BASED ON GAME TYPE
+    let demand = 0;
     
-    // Marketing & Randomness
+    if (game.type === 'pulltab') {
+        // PULL TAB LOGIC:
+        // Huge sales in BARS and GAS. Terrible in GROCERY.
+        // We iterate through chains to calculate specific demand
+        GameState.chains.forEach(chain => {
+            if (chain.activeStores > 0) {
+                let multiplier = 0;
+                if (chain.type === 'BAR') multiplier = 4.0;      // massive synergy
+                else if (chain.type === 'GAS') multiplier = 1.5; // good synergy
+                else if (chain.type === 'GROCERY') multiplier = 0.1; // terrible
+                
+                // Base sales: 300 pull tabs per week per store * multiplier
+                demand += chain.activeStores * 300 * multiplier;
+            }
+        });
+        
+        // No "New Release Hype" for pull tabs, they are flat steady earners
+        
+    } else {
+        // SCRATCH TICKET LOGIC (Standard):
+        const totalStores = getTotalActiveStores();
+        demand = totalStores * 120;
+        
+        // Scratch tickets benefit from "New Release Hype"
+        // (Degrades over time)
+        const weeksOld = (new Date(GameState.currentDate) - new Date(game.releaseDate)) / (1000 * 60 * 60 * 24 * 7);
+        const hype = Math.max(0.5, 2.0 - (weeksOld * 0.1)); // Starts at 2.0x, fades to 0.5x
+        demand *= hype;
+    }
+
+    // Apply Global Boosts
+    demand *= holidayBoost;
     const hasMarketing = GameState.marketingCampaigns.some(c => c.active && c.targetGame === game.id);
     if (hasMarketing) demand *= 1.5;
-    const actualDemand = Math.floor(demand * (0.8 + Math.random() * 0.4));
     
-    // Cap at inventory
+    // Randomize
+    const actualDemand = Math.floor(demand * (0.8 + Math.random() * 0.4));
     sales.ticketsSold = Math.min(actualDemand, game.inventory);
     sales.revenue = sales.ticketsSold * game.price;
 
-    // 2. PRIZE SIMULATION (The Fix)
-    
-    // A. Small Prizes (Volatility Logic)
-    if (sales.ticketsSold > 0 && game.prizePoolRemaining > 0) {
-        // What % of the stack did we sell? 
-        // If we sold 5% of the stack, we expect to pay out 5% of the remaining pool ON AVERAGE.
-        const percentSold = sales.ticketsSold / game.inventory;
-        const expectedPayout = game.prizePoolRemaining * percentSold;
+    // 2. PRIZE LOGIC
+    if (game.type === 'pulltab') {
+        // Simple Margin Logic for Pull Tabs
+        // If profit margin is 25%, then 75% goes to prizes + randomness
+        const payoutRate = (1.0 - game.profitMargin);
+        const volatility = 0.9 + (Math.random() * 0.2); // Low volatility (0.9 - 1.1)
         
-        // VOLATILITY FACTOR
-        // Real randomness: payout can swing widely week to week.
-        // Factor between 0.0 (No winners found) and 2.5 (Tons of winners found)
-        // We use a "bell curve-ish" random to make extreme values rarer
-        const r1 = Math.random();
-        const r2 = Math.random();
-        const volatility = (r1 + r2) * 1.2; // Range roughly 0.0 to 2.4, centered on 1.2
+        sales.prizesPaid = Math.floor(sales.revenue * payoutRate * volatility);
         
-        let actualSmallPayout = Math.floor(expectedPayout * volatility);
+    } else {
+        // SCRATCH TICKET PRIZE LOGIC (Existing complex pool logic)
+        // ... (Keep your existing scratch logic here, or copy/paste the block below) ...
         
-        // Safety cap: Can't pay out more than what's in the pool
-        if (actualSmallPayout > game.prizePoolRemaining) {
-            actualSmallPayout = game.prizePoolRemaining;
+        if (sales.ticketsSold > 0 && game.prizePoolRemaining > 0) {
+            const percentSold = sales.ticketsSold / game.inventory;
+            const expectedPayout = game.prizePoolRemaining * percentSold;
+            const volatility = (Math.random() + Math.random()) * 1.2;
+            let actualSmallPayout = Math.floor(expectedPayout * volatility);
+            if (actualSmallPayout > game.prizePoolRemaining) actualSmallPayout = game.prizePoolRemaining;
+            sales.prizesPaid += actualSmallPayout;
+            game.prizePoolRemaining -= actualSmallPayout;
         }
-        
-        sales.prizesPaid += actualSmallPayout;
-        
-        // DEDUCT FROM POOL
-        // This is key: If we overpaid this week, game.prizePoolRemaining shrinks faster,
-        // making future weeks inherently more profitable (regression to mean).
-        game.prizePoolRemaining -= actualSmallPayout;
-    }
 
-    // B. Jackpot Logic (Separate Event)
-    // Jackpots are not part of the small prize pool simulation, they are discrete events.
-    if (game.jackpotsRemaining > 0 && sales.ticketsSold > 0) {
-        // Chance relative to stack depth
-        const oddsPerTicket = game.jackpotsRemaining / game.inventory;
-        
-        // Simulate "Was the jackpot in this batch of sold tickets?"
-        // We use a random check against the total batch probability
-        if (Math.random() < (oddsPerTicket * sales.ticketsSold)) {
-            sales.bigWinner = game.topPrize;
-            sales.prizesPaid += game.topPrize;
-            game.jackpotsRemaining--;
+        if (game.jackpotsRemaining > 0 && sales.ticketsSold > 0) {
+            const oddsPerTicket = game.jackpotsRemaining / game.inventory;
+            if (Math.random() < (oddsPerTicket * sales.ticketsSold)) {
+                sales.bigWinner = game.topPrize;
+                sales.prizesPaid += game.topPrize;
+                game.jackpotsRemaining--;
+            }
         }
     }
 
-    // 3. Update History
+    // Update Game State
     game.inventory -= sales.ticketsSold;
     game.totalSold += sales.ticketsSold;
     game.totalRevenue += sales.revenue;
@@ -315,14 +422,280 @@ function updateAllUI() {
 // =====================================================
 
 function updateRetailersPage() {
-    // Logic for retailers will go here later
-    // For now, update the basic count in the dashboard if needed
-    const retailerCount = GameState.retailers.length;
-    // We can add simple logic here later
+    const container = document.querySelector('#retailers');
+    if (!container) return;
+    
+    const totalStores = getTotalActiveStores();
+    const activeChains = GameState.chains.filter(c => c.tier > 0).length;
+    
+    // ESTIMATED MARKET CAP: 3,500 Retailers in the state
+    const marketCap = 3500;
+    const coveragePct = Math.min(100, (totalStores / marketCap) * 100).toFixed(1);
+    
+    let html = `
+        <h2>CORPORATE ACCOUNTS</h2>
+        <div class="page-section">
+            <div class="quick-stats" style="grid-template-columns: repeat(3, 1fr);">
+                <div class="quick-stat-card">
+                    <div class="quick-stat-label">Total Locations</div>
+                    <div class="quick-stat-value">${totalStores.toLocaleString()}</div>
+                </div>
+                <div class="quick-stat-card">
+                    <div class="quick-stat-label">Active Partners</div>
+                    <div class="quick-stat-value">${activeChains} <span style="font-size: 0.5em; color: #888;">/ ${GameState.chains.length}</span></div>
+                </div>
+                <div class="quick-stat-card">
+                    <div class="quick-stat-label">Market Coverage</div>
+                    <div class="quick-stat-value">${coveragePct}%</div>
+                    <div class="quick-stat-change" style="font-size: 0.7em; color: #888;">Target: 3,500 Stores</div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="page-section">
+            <h3>Partnership Opportunities</h3>
+            <div class="dashboard-grid">
+    `;
+    
+    // Sort: Active partners first, then by size
+    const sortedChains = [...GameState.chains].sort((a, b) => {
+        if (a.tier !== b.tier) return b.tier - a.tier; // Higher tier first
+        return b.totalStores - a.totalStores; // Bigger chains first
+    });
+    
+    sortedChains.forEach(chain => {
+        // Ensure stats exist to prevent crash
+        const stats = chain.stats || { totalSales: 0, totalCommission: 0, totalProfit: 0 };
+        
+        // Determine status style
+        let statusColor = '#444';
+        let statusText = 'NO CONTRACT';
+        let btnText = "NEGOTIATE CONTRACT";
+        let btnAction = `openNegotiation('${chain.id}')`;
+        let btnClass = 'btn';
+        let infoText = `${chain.totalStores} Locations Available`;
+        let opacity = '1.0';
+        
+        if (chain.tier === 1) {
+            statusColor = '#f4d03f';
+            statusText = 'PILOT PROGRAM';
+            btnText = "NEGOTIATE EXPANSION";
+            infoText = `Active: 5 / ${chain.totalStores} Stores`;
+        } else if (chain.tier === 2) {
+            statusColor = '#2196F3';
+            statusText = 'REGIONAL PARTNER';
+            btnText = "NEGOTIATE STATEWIDE";
+            infoText = `Active: ${chain.activeStores} / ${chain.totalStores} Stores`;
+        } else if (chain.tier === 3) {
+            statusColor = '#4CAF50';
+            statusText = 'EXCLUSIVE PARTNER';
+            btnText = 'MAXIMUM SATURATION';
+            btnAction = ''; // No action
+            btnClass = 'btn'; 
+            infoText = `All ${chain.totalStores} Stores Active`;
+        } else {
+            // Grey out inactive chains slightly
+            opacity = '0.7';
+        }
+        
+        // Button Styling (Disable negotiation button if maxed out)
+        let btnStyle = "width: 100%; font-size: 0.8em; padding: 10px; margin-top: 15px;";
+        if(chain.tier === 3) btnStyle += " background: #222; border-color: #444; color: #888; cursor: default;";
+
+        // --- PULL TAB BUTTON LOGIC ---
+        let ptButton = '';
+        if (chain.activeStores > 0) {
+            const machines = chain.pullTabStores || 0;
+            ptButton = `
+                <button class="small-btn" style="width: 100%; margin-top: 5px; border-color: #e65100; color: #e65100; background: transparent;" onclick="openPullTabMgmt('${chain.id}')">
+                    🔌 PULL TABS (${machines}/${chain.activeStores})
+                </button>
+            `;
+        }
+
+        // --- LOTTO BUTTON LOGIC ---
+        let lottoButton = '';
+        if (chain.activeStores > 0) {
+            const terminals = chain.lottoMachines || 0;
+            lottoButton = `
+                <button class="small-btn" style="width: 100%; margin-top: 5px; border-color: #E91E63; color: #E91E63; background: transparent;" onclick="openLottoMgmt('${chain.id}')">
+                    📡 LOTTO TERMINALS (${terminals}/${chain.activeStores})
+                </button>
+            `;
+        }
+
+        html += `
+            <div class="dashboard-card" style="border-top: 4px solid ${statusColor}; opacity: ${opacity}; transition: opacity 0.2s;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                    <div style="font-size: 2em;">${chain.icon}</div>
+                    <div style="text-align: right;">
+                        <div style="font-size: 0.7em; color: ${statusColor}; font-weight: bold; letter-spacing: 1px;">${statusText}</div>
+                        <div style="font-size: 0.8em; color: #888;">${chain.type}</div>
+                    </div>
+                </div>
+                
+                <h4 style="margin: 0 0 5px 0;">${chain.name}</h4>
+                <div style="color: #ccc; font-size: 0.85em; margin-bottom: 15px; border-bottom: 1px solid #333; padding-bottom: 10px;">
+                    ${infoText}
+                </div>
+                
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 0.8em; margin-bottom: 10px; background: #111; padding: 10px; border-radius: 4px;">
+                    <div>
+                        <div style="color: #888;">Total Sales</div>
+                        <div style="color: #fff;">$${Math.floor(stats.totalSales).toLocaleString()}</div>
+                    </div>
+                    <div style="text-align: right;">
+                        <div style="color: #888;">Commission</div>
+                        <div style="color: #ff9800;">$${Math.floor(stats.totalCommission).toLocaleString()}</div>
+                    </div>
+                    <div style="margin-top: 5px;">
+                        <div style="color: #888;">Net Profit</div>
+                        <div style="color: #4CAF50;">$${Math.floor(stats.totalProfit).toLocaleString()}</div>
+                    </div>
+                </div>
+
+                <button class="${btnClass}" style="${btnStyle}" onclick="${btnAction}" onmouseover="this.parentElement.style.opacity='1'" onmouseout="if(${chain.tier} === 0) this.parentElement.style.opacity='0.7'">
+                    ${btnText}
+                </button>
+                
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 5px; margin-top: 5px;">
+                    ${ptButton}
+                    ${lottoButton}
+                </div>
+            </div>
+        `;
+    });
+    
+    html += `</div></div>`;
+    container.innerHTML = html;
 }
 
 function updateAnalyticsPage() {
-    // Logic for graphs will go here later
+    const container = document.querySelector('#analytics');
+    if (!container) return;
+    
+    const h = GameState.financials.history;
+    const totalRev = h.scratchSales + h.pullTabHandle + (h.instaplaySales || 0);
+    const totalExp = h.scratchPayouts + h.pullTabPayouts + (h.instaplayPayouts || 0) + h.commissions + h.printing + h.infrastructure + h.maintenance + h.staffing;
+    const profit = totalRev - totalExp;
+    
+    const fmt = (num) => num.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
+    
+    let html = `
+        <h2>FINANCIAL ANALYTICS</h2>
+        
+        <div class="page-section">
+            <div class="quick-stats">
+                <div class="quick-stat-card">
+                    <div class="quick-stat-label">Lifetime Revenue</div>
+                    <div class="quick-stat-value" style="color: #4CAF50;">${fmt(totalRev)}</div>
+                </div>
+                <div class="quick-stat-card">
+                    <div class="quick-stat-label">Lifetime Expenses</div>
+                    <div class="quick-stat-value" style="color: #ff4444;">${fmt(totalExp)}</div>
+                </div>
+                <div class="quick-stat-card">
+                    <div class="quick-stat-label">Net Profit</div>
+                    <div class="quick-stat-value" style="color: ${profit >= 0 ? '#4CAF50' : '#ff4444'};">${fmt(profit)}</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="page-section">
+            <h3>Income Statement</h3>
+            <table style="width: 100%; border-collapse: collapse; color: #eee; font-size: 0.9em;">
+                <tr style="border-bottom: 2px solid #444; text-align: left;">
+                    <th style="padding: 10px;">Category</th>
+                    <th style="padding: 10px; text-align: right;">Amount</th>
+                    <th style="padding: 10px; text-align: right;">% of Rev</th>
+                </tr>
+                
+                <tr style="background: #1a2634;">
+                    <td style="padding: 10px; color: #4CAF50; font-weight: bold;">REVENUE</td>
+                    <td></td><td></td>
+                </tr>
+                <tr>
+                    <td style="padding: 8px 20px;">Scratcher Sales</td>
+                    <td style="text-align: right;">${fmt(h.scratchSales)}</td>
+                    <td style="text-align: right; color: #888;">${((h.scratchSales/totalRev)*100 || 0).toFixed(1)}%</td>
+                </tr>
+                <tr>
+                    <td style="padding: 8px 20px;">Instaplay Sales (Digital)</td>
+                    <td style="text-align: right;">${fmt(h.instaplaySales || 0)}</td>
+                    <td style="text-align: right; color: #888;">${((h.instaplaySales/totalRev)*100 || 0).toFixed(1)}%</td>
+                </tr>
+                <tr>
+                    <td style="padding: 8px 20px;">Pull Tab Handle</td>
+                    <td style="text-align: right;">${fmt(h.pullTabHandle)}</td>
+                    <td style="text-align: right; color: #888;">${((h.pullTabHandle/totalRev)*100 || 0).toFixed(1)}%</td>
+                </tr>
+                <tr style="border-top: 1px solid #444; font-weight: bold;">
+                    <td style="padding: 8px 20px;">TOTAL REVENUE</td>
+                    <td style="text-align: right; color: #4CAF50;">${fmt(totalRev)}</td>
+                    <td></td>
+                </tr>
+
+                <tr style="background: #1a2634;">
+                    <td style="padding: 10px; color: #ff4444; font-weight: bold; margin-top: 20px;">EXPENSES</td>
+                    <td></td><td></td>
+                </tr>
+                <tr>
+                    <td style="padding: 8px 20px;">Prize Payouts (Scratch)</td>
+                    <td style="text-align: right;">-${fmt(h.scratchPayouts)}</td>
+                    <td style="text-align: right; color: #888;">${((h.scratchPayouts/totalRev)*100 || 0).toFixed(1)}%</td>
+                </tr>
+                <tr>
+                    <td style="padding: 8px 20px;">Prize Payouts (Instaplay)</td>
+                    <td style="text-align: right;">-${fmt(h.instaplayPayouts || 0)}</td>
+                    <td style="text-align: right; color: #888;">${((h.instaplayPayouts/totalRev)*100 || 0).toFixed(1)}%</td>
+                </tr>
+                <tr>
+                    <td style="padding: 8px 20px;">Prize Payouts (Pull Tabs)</td>
+                    <td style="text-align: right;">-${fmt(h.pullTabPayouts)}</td>
+                    <td style="text-align: right; color: #888;">${((h.pullTabPayouts/totalRev)*100 || 0).toFixed(1)}%</td>
+                </tr>
+                <tr>
+                    <td style="padding: 8px 20px;">Retailer Commissions</td>
+                    <td style="text-align: right;">-${fmt(h.commissions)}</td>
+                    <td style="text-align: right; color: #888;">${((h.commissions/totalRev)*100 || 0).toFixed(1)}%</td>
+                </tr>
+                <tr>
+                    <td style="padding: 8px 20px;">Staffing & Operations</td>
+                    <td style="text-align: right;">-${fmt(h.staffing)}</td>
+                    <td style="text-align: right; color: #888;">${((h.staffing/totalRev)*100 || 0).toFixed(1)}%</td>
+                </tr>
+                <tr>
+                    <td style="padding: 8px 20px;">Maintenance (Machines)</td>
+                    <td style="text-align: right;">-${fmt(h.maintenance)}</td>
+                    <td style="text-align: right; color: #888;">${((h.maintenance/totalRev)*100 || 0).toFixed(1)}%</td>
+                </tr>
+                 <tr>
+                    <td style="padding: 8px 20px;">Ticket Printing / Dev</td>
+                    <td style="text-align: right;">-${fmt(h.printing)}</td>
+                    <td style="text-align: right; color: #888;">${((h.printing/totalRev)*100 || 0).toFixed(1)}%</td>
+                </tr>
+                <tr>
+                    <td style="padding: 8px 20px;">Infrastructure (Installs)</td>
+                    <td style="text-align: right;">-${fmt(h.infrastructure)}</td>
+                    <td style="text-align: right; color: #888;">${((h.infrastructure/totalRev)*100 || 0).toFixed(1)}%</td>
+                </tr>
+
+                <tr style="border-top: 1px solid #444; font-weight: bold;">
+                    <td style="padding: 8px 20px;">TOTAL EXPENSES</td>
+                    <td style="text-align: right; color: #ff4444;">-${fmt(totalExp)}</td>
+                    <td></td>
+                </tr>
+
+                <tr style="border-top: 2px solid #fff; font-size: 1.1em; background: #222;">
+                    <td style="padding: 15px;">NET INCOME</td>
+                    <td style="text-align: right; color: ${profit >= 0 ? '#4CAF50' : '#ff4444'};">${fmt(profit)}</td>
+                    <td style="text-align: right;">${((profit/totalRev)*100 || 0).toFixed(1)}%</td>
+                </tr>
+            </table>
+        </div>
+    `;
+    
+    container.innerHTML = html;
 }
 
 function updateNewsPage() {
@@ -348,7 +721,35 @@ function updateDashboard() {
     // 4. Weekly Revenue
     if (budgetEls.length > 3) budgetEls[3].textContent = moneyFormatter.format(GameState.stats.weeklyRevenue);
 }
+function distributeChainSales(totalWeeklyRevenue) {
+    const totalActive = getTotalActiveStores();
+    if (totalActive === 0) return;
 
+    GameState.chains.forEach(chain => {
+        // Initialize stats object if it doesn't exist
+        if (!chain.stats) chain.stats = { totalSales: 0, totalCommission: 0, totalProfit: 0 };
+        
+        if (chain.activeStores > 0) {
+            // Calculate this chain's share of the total market this week
+            const marketShare = chain.activeStores / totalActive;
+            
+            // Attributed Revenue
+            const chainRevenue = totalWeeklyRevenue * marketShare;
+            
+            // Commission Cost (based on their specific contract rate)
+            const commissionRate = chain.contract ? chain.contract.commission : 0.05;
+            const chainComm = chainRevenue * commissionRate;
+            
+            // "Profit" (Net Revenue to Lottery from this chain, pre-prizes)
+            const chainProfit = chainRevenue - chainComm;
+            
+            // Update Cumulative Stats
+            chain.stats.totalSales += chainRevenue;
+            chain.stats.totalCommission += chainComm;
+            chain.stats.totalProfit += chainProfit;
+        }
+    });
+}
 function updateHeader() {
     // Update stat bar in header
     document.querySelector('.stats-bar').innerHTML = `
@@ -379,7 +780,7 @@ function startGame() {
     // Hide menu, show game
     document.getElementById('mainMenu').style.display = 'none';
     document.getElementById('gameScreen').style.display = 'block';
-    
+    GameState.chains = generateChains();
     // Initialize UI
     updateAllUI();
     showPage('dashboard');
@@ -616,6 +1017,7 @@ function publishGame() {
     if (!confirm(`Launch "${name}"?\n\n• Printing: ${qty.toLocaleString()} tickets\n• Jackpots: ${numJackpots} available ($${jackpot.toLocaleString()} each)\n• Cost: $${printCost.toLocaleString()}`)) return;
     
     GameState.budget -= printCost;
+    GameState.financials.currentWeek.printing += printCost;
     
     const newGame = {
         id: 'game_' + Date.now(),
@@ -653,82 +1055,212 @@ function publishGame() {
 }
 
 function updateGamesPage() {
-    console.log("Updating Games Page..."); // Debug check
+    // 1. Get Containers
+    const lottoContainer = document.querySelector('#lotto-tab');
+    const lotteryContainer = document.querySelector('#lottery-tab');
     
-    const container = document.querySelector('#lottery-tab .page-section');
-    if (!container) {
-        console.error("Could not find the game list container!");
-        return;
-    }
-    
-    const scratchGames = GameState.games.filter(g => g.type === 'scratch');
-    
-    let html = `<h3>Active Scratch Tickets</h3>`;
-    
-    if (scratchGames.length === 0) {
-        html += `
-            <div style="padding: 20px; background: #16213e; border: 1px dashed #444; text-align: center; color: #888;">
-                No games active. Click "Create New Scratch Ticket" to start printing money!
-            </div>`;
-    } else {
-        html += `<div class="game-list">`;
+    // 2. RENDER LOTTERY TAB (Scratch & Pull Tabs)
+    if (lotteryContainer) {
+        const scratchGames = GameState.games.filter(g => g.type === 'scratch' && g.active);
         
-        scratchGames.forEach(game => {
-            // Calculate Profit
-            const profit = game.totalRevenue - game.totalPrizes - game.printCost;
-            const profitColor = profit >= 0 ? '#4CAF50' : '#ff4444';
-            
-            // Calculate Stock %
-            const stockPct = (game.inventory / game.totalPrinted) * 100;
-            const stockColor = stockPct < 20 ? '#ff4444' : '#f4d03f';
-            
-            html += `
+        let ptHtml = '';
+        // Only show Pull Tab Operations if machines exist
+        const totalMachines = GameState.chains.reduce((acc, c) => acc + (c.pullTabStores || 0), 0);
+        if (totalMachines > 0) {
+            ptHtml = `
+                <div class="page-section" style="margin-top: 40px; border-top: 1px solid #333; padding-top: 20px;">
+                    <h3>Pull Tab Operations</h3>
+                    <div class="dashboard-card" style="background: #1a1a2e; border: 1px solid #e65100; padding: 20px;">
+                        <div style="color: #e65100; font-weight: bold;">NETWORK ACTIVE</div>
+                        <div style="font-size: 1.5em; color: #fff;">${totalMachines.toLocaleString()} Machines</div>
+                    </div>
+                </div>`;
+        }
+
+        lotteryContainer.innerHTML = `
+            <div class="page-section">
+                <div style="display:flex; justify-content:space-between; align-items:center;">
+                    <h3>Active Scratch Tickets</h3>
+                    <button class="small-btn" onclick="openGameDesigner()">+ NEW SCRATCHER</button>
+                </div>
+                ${renderGameList(scratchGames, 'scratch')}
+            </div>
+            ${ptHtml}
+        `;
+    }
+
+    // 3. RENDER LOTTO TAB (Instaplay)
+    if (lottoContainer) {
+        // FILTER FIX: Ensure we catch 'instaplay' type correctly
+        const instaGames = GameState.games.filter(g => g.type === 'instaplay' && g.active);
+
+        let html = `
+            <div class="page-section">
+                <div style="display:flex; justify-content:space-between; align-items:center;">
+                    <h3>Active Instaplay Games</h3>
+                    <button class="small-btn" onclick="openInstaplayDesigner()">+ CREATE INSTAPLAY</button>
+                </div>
+                <p style="color: #888; font-size: 0.9em; margin-bottom: 15px;">
+                    Digital games printed on demand. Jackpots pre-funded.
+                </p>
+        `;
+
+        if (instaGames.length === 0) {
+            html += `<p style="color: #666; font-style: italic;">No active Instaplay games.</p>`;
+        } else {
+            html += `<div class="game-list">`;
+            instaGames.forEach(game => {
+                // Calculate Net Profit (Revenue - Prizes - Funding Contributions)
+                // Note: We track totalPrizes as "Small Prizes + Jackpot Hits"
+                const profit = game.totalRevenue - game.totalPrizes; 
+                const profitColor = profit >= 0 ? '#4CAF50' : '#ff4444';
+                const isProgressive = game.flavor !== 'steady';
+                
+                html += `
+                    <div class="game-card" style="background: #16213e; border: 1px solid #E91E63; padding: 15px; margin-bottom: 15px; border-left: 4px solid #E91E63;">
+                        <div style="display: flex; justify-content: space-between; margin-bottom: 10px;">
+                            <div>
+                                <strong style="color: #E91E63; font-size: 1.1em;">⚡ ${game.name}</strong>
+                                <span style="background: #000; padding: 2px 6px; border-radius: 4px; font-size: 0.8em; margin-left: 10px;">$${game.price}</span>
+                                <span style="font-size: 0.8em; color: #aaa; margin-left: 10px;">(${game.payoutPct}% Payout)</span>
+                            </div>
+                            <div style="color: ${profitColor}; font-weight: bold;">$${profit.toLocaleString()}</div>
+                        </div>
+                        
+                        <div style="display: flex; justify-content: space-between; align-items: flex-end;">
+                            <div>
+                                <div style="font-size: 0.7em; color: #aaa;">CURRENT JACKPOT</div>
+                                <div style="font-size: 1.5em; color: #fff; font-weight: bold; text-shadow: 0 0 10px #E91E63;">
+                                    $${Math.floor(game.currentJackpot).toLocaleString()}
+                                </div>
+                            </div>
+                            <div style="text-align: right; font-size: 0.8em; color: #ccc;">
+                                Sales: $${game.totalRevenue.toLocaleString()}<br>
+                                Type: ${isProgressive ? 'Progressive' : 'Steady'}
+                            </div>
+                        </div>
+                    </div>
+                `;
+            });
+            html += `</div>`;
+        }
+        
+        lottoContainer.innerHTML = html;
+    }
+}
+function updatePullTabInstallCalc() {
+    const qty = parseInt(document.getElementById('ptInstallQty').value);
+    
+    // Grab synergy from the dataset we set in openPullTabMgmt
+    // Note: We need to make sure openPullTabMgmt sets a "Base Handle" value now
+    const baseHandle = parseFloat(document.getElementById('ptInstallQty').dataset.baseHandle);
+    
+    const cost = qty * 500; // $500 install fee
+    const estHandle = qty * baseHandle;
+    const estProfit = estHandle * 0.25; // Assuming default 25% margin
+    
+    document.getElementById('ptInstallCount').innerText = `${qty} Machines`;
+    document.getElementById('ptInstallCost').innerText = `-$${cost.toLocaleString()}`;
+    document.getElementById('ptInstallRev').innerText = `$${estHandle.toLocaleString()}`;
+    document.getElementById('ptInstallProfit').innerText = `+$${estProfit.toLocaleString()}`;
+}
+
+// Update openPullTabMgmt to set the Base Handle correctly
+function openPullTabMgmt(chainId) {
+    const chain = GameState.chains.find(c => c.id === chainId);
+    if (!chain) return;
+    
+    currentPtChainId = chainId;
+    
+    let baseHandle = 0;
+    let synergyText = "";
+    
+    // UPDATED ESTIMATES FOR UI
+    if (chain.type === 'BAR') { baseHandle = 2500; synergyText = "HIGH ($2,500/week)"; }
+    else if (chain.type === 'GAS') { baseHandle = 1000; synergyText = "MEDIUM ($1,000/week)"; }
+    else { baseHandle = 150; synergyText = "LOW ($150/week)"; }
+    
+    // UI Updates
+    document.getElementById('ptMgmtTitle').innerText = `INSTALL: ${chain.name.toUpperCase()}`;
+    document.getElementById('ptMgmtType').innerText = chain.type;
+    document.getElementById('ptMgmtSynergy').innerText = synergyText;
+    
+    // Slider Setup
+    const available = chain.activeStores - chain.pullTabStores;
+    const slider = document.getElementById('ptInstallQty');
+    slider.min = 0;
+    slider.max = available;
+    slider.value = 0;
+    slider.dataset.baseHandle = baseHandle; 
+    
+    document.getElementById('ptAvailable').innerText = `Available Locations: ${available}`;
+    updatePullTabInstallCalc();
+    document.getElementById('pullTabMgmtModal').style.display = 'block';
+}
+
+// 3. UPDATE CALC (New Cost: $2,500)
+function updatePullTabInstallCalc() {
+    const qty = parseInt(document.getElementById('ptInstallQty').value);
+    const baseHandle = parseFloat(document.getElementById('ptInstallQty').dataset.baseHandle);
+    
+    // NEW COST: $2,500 PER MACHINE
+    const cost = qty * 2500; 
+    
+    const estHandle = qty * baseHandle;
+    const estProfit = estHandle * 0.25; // Gross profit before overhead
+    
+    document.getElementById('ptInstallCount').innerText = `${qty} Machines`;
+    document.getElementById('ptInstallCost').innerText = `-$${cost.toLocaleString()}`;
+    document.getElementById('ptInstallRev').innerText = `$${estHandle.toLocaleString()}`;
+    // Show net profit estimate (minus the $50 op cost)
+    const netEst = estProfit - (qty * 50);
+    document.getElementById('ptInstallProfit').innerText = `+$${netEst.toLocaleString()}`;
+}
+// Simple updater for the slider
+function updatePtConfig(value) {
+    GameState.pullTabConfig.payoutRate = parseInt(value) / 100;
+    document.getElementById('ptPayoutDisplay').innerText = value + "%";
+}
+function renderGameList(games, type) {
+    if (games.length === 0) return `<p style="color: #666; font-style: italic;">No active games.</p>`;
+    
+    let listHtml = `<div class="game-list">`;
+    
+    games.forEach(game => {
+        const profit = game.totalRevenue - game.totalPrizes - game.printCost;
+        const profitColor = profit >= 0 ? '#4CAF50' : '#ff4444';
+        const stockPct = (game.inventory / game.totalPrinted) * 100;
+        
+        // Visual distinction for Pull Tabs
+        const icon = type === 'scratch' ? '🎫' : '🎰';
+        const subtext = type === 'scratch' 
+            ? `Top Prize: $${game.topPrize.toLocaleString()}` 
+            : `Margin: ${(game.profitMargin * 100)}%`;
+
+        listHtml += `
             <div class="game-card" style="background: #16213e; border: 1px solid #444; padding: 15px; margin-bottom: 15px; border-left: 4px solid ${profitColor};">
-                <div style="display: flex; justify-content: space-between; margin-bottom: 15px; border-bottom: 1px solid #333; padding-bottom: 10px;">
+                <div style="display: flex; justify-content: space-between; margin-bottom: 10px;">
                     <div>
-                        <strong style="color: #f4d03f; font-size: 1.2em;">${game.name}</strong>
-                        <span style="background: #000; padding: 2px 6px; border-radius: 4px; font-size: 0.8em; margin-left: 10px;">$${game.price}</span>
+                        <strong style="color: #f4d03f; font-size: 1.1em;">${icon} ${game.name}</strong>
+                        <span style="background: #000; padding: 2px 6px; border-radius: 4px; font-size: 0.8em; margin-left: 10px;">$${game.price.toFixed(2)}</span>
                     </div>
-                    <div style="text-align: right;">
-                        <div style="color: #aaa; font-size: 0.8em;">NET PROFIT</div>
-                        <div style="color: ${profitColor}; font-weight: bold;">$${profit.toLocaleString()}</div>
-                    </div>
+                    <div style="color: ${profitColor}; font-weight: bold;">$${profit.toLocaleString()}</div>
                 </div>
-
-                <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 20px; font-size: 0.9em;">
-                    <div>
-                        <div style="color: #aaa; margin-bottom: 5px;">STOCK LEVEL</div>
-                        <div style="background: #000; height: 10px; border-radius: 5px; overflow: hidden; margin-bottom: 5px;">
-                            <div style="width: ${stockPct}%; background: ${stockColor}; height: 100%;"></div>
-                        </div>
-                        <div style="font-size: 0.8em;">${game.inventory.toLocaleString()} / ${game.totalPrinted.toLocaleString()}</div>
-                    </div>
-
-                    <div>
-                        <div style="color: #aaa; margin-bottom: 5px;">FINANCIALS</div>
-                        <div style="display: flex; justify-content: space-between;">
-                            <span>Sales:</span> <span style="color: #fff;">$${game.totalRevenue.toLocaleString()}</span>
-                        </div>
-                        <div style="display: flex; justify-content: space-between;">
-                            <span>Paid Out:</span> <span style="color: #ff9800;">-$${game.totalPrizes.toLocaleString()}</span>
-                        </div>
-                    </div>
-
-                    <div style="text-align: right;">
-                        <div style="color: #aaa; margin-bottom: 5px;">JACKPOTS ($${game.topPrize.toLocaleString()})</div>
-                        <div style="font-size: 1.5em; font-weight: bold; color: ${game.jackpotsRemaining > 0 ? '#fff' : '#444'};">
-                            ${game.jackpotsRemaining} <span style="font-size: 0.6em; color: #666;">/ ${game.jackpotsTotal}</span>
-                        </div>
-                        ${game.jackpotsRemaining === 0 ? '<span style="color: #ff4444; font-size: 0.8em;">SOLD OUT</span>' : ''}
-                    </div>
+                
+                <div style="display: flex; justify-content: space-between; font-size: 0.8em; color: #ccc;">
+                    <div>${subtext}</div>
+                    <div>Sales: $${game.totalRevenue.toLocaleString()}</div>
                 </div>
-            </div>`;
-        });
-        
-        html += `</div>`;
-    }
+                
+                <div style="margin-top: 10px; background: #000; height: 6px; border-radius: 3px; overflow: hidden;">
+                    <div style="width: ${stockPct}%; background: #2196F3; height: 100%;"></div>
+                </div>
+                <div style="text-align: right; font-size: 0.7em; color: #666; margin-top: 2px;">${game.inventory.toLocaleString()} remaining</div>
+            </div>
+        `;
+    });
     
-    container.innerHTML = html;
+    return listHtml + `</div>`;
 }
 function generateRandomGame() {
     // 1. Randomize Price ($1, $2, $5, $10, $20)
@@ -819,4 +1351,705 @@ function generateRandomGame() {
     
     // 6. Update Visuals
     updateTicketPreview();
+}
+
+function generateChains() {
+    const counts = { GAS: 12, GROCERY: 5, BAR: 3 };
+    const personalities = ['GREEDY', 'SKEPTICAL', 'EASYGOING', 'VOLUME_FOCUSED'];
+    
+    const chainTypes = {
+        GAS: { type: 'GAS', icon: '⛽', setup: 2500, min: 20, max: 200 },
+        GROCERY: { type: 'GROCERY', icon: '🛒', setup: 15000, min: 5, max: 50 },
+        BAR: { type: 'BAR', icon: '🍺', setup: 1000, min: 10, max: 40 }
+    };
+    
+    // Name Pools
+    const names = {
+        GAS: [
+            "Kwik-Stop", "SpeedyMart", "Pump 'n Go", "FuelUp", "Metro Express", 
+            "Road Ranger", "Casey's General", "Kum & Go", "Git-n-Go", "TravelCenters",
+            "Pilot Flying J", "Love's Stop", "Sinclair", "Dino Mart", "Circle K", 
+            "7-Eleven", "RaceTrac", "Sheetz", "Wawa", "QuikTrip"
+        ],
+        GROCERY: [
+            "MegaMart", "FreshFoods", "Corner Market", "Super Saver", "Hy-Vee", 
+            "Fareway", "Whole Earth", "Aldi's Choice", "Trader Joe's", "Publix", "Kroger"
+        ],
+        BAR: [
+            "The Pub", "Joe's Grill", "Lucky's Lounge", "Buffalo Wilds", "The Library", 
+            "Sports Column", "Brothers Bar", "Old Chicago", "Applebee's"
+        ]
+    };
+    
+    const chains = [];
+    let idCounter = 0;
+
+    // Helper to generate a chain
+    function createChain(typeKey) {
+        const typeObj = chainTypes[typeKey];
+        const namePool = names[typeKey];
+        
+        // Pick a random name and remove it from the pool so we don't repeat
+        const nameIndex = Math.floor(Math.random() * namePool.length);
+        let name = namePool[nameIndex];
+        
+        // Remove used name from array (or use generic if pool empty)
+        if (name) {
+            namePool.splice(nameIndex, 1); 
+        } else {
+            name = `${typeObj.type} Chain ${idCounter}`;
+        }
+
+        // Randomize size
+        const sizeMultiplier = 0.5 + Math.random() * 1.5; 
+        const totalStores = Math.floor(
+            (typeObj.min + Math.random() * (typeObj.max - typeObj.min)) * sizeMultiplier
+        );
+
+        // NEW: Assign Personality
+        const personality = personalities[Math.floor(Math.random() * personalities.length)];
+        
+        chains.push({
+            id: `chain_${idCounter++}`,
+            name: name,
+            type: typeObj.type,
+            icon: typeObj.icon,
+            totalStores: totalStores,
+            activeStores: 0,
+            tier: 0, 
+            pullTabStores: 0,
+            lottoMachines: 0,
+            setupCostPerStore: typeObj.setup,
+            
+            // NEW RELATIONSHIP STATS
+            personality: personality,
+            relationship: 50, // Starts neutral
+            contract: {
+                commission: 0.05, // Default 5%
+                exclusivity: false
+            },
+            history: [] // Track past deals
+        });
+    }
+
+    // 2. Loop through and create them
+    for (let i = 0; i < counts.GAS; i++) createChain('GAS');
+    for (let i = 0; i < counts.GROCERY; i++) createChain('GROCERY');
+    for (let i = 0; i < counts.BAR; i++) createChain('BAR');
+    
+    return chains;
+}
+function commitPullTabInstall() {
+    const chain = GameState.chains.find(c => c.id === currentPtChainId);
+    const qty = parseInt(document.getElementById('ptInstallQty').value);
+    
+    // NEW COST
+    const cost = qty * 2500;
+    
+    if (qty === 0) return;
+    
+    if (GameState.budget < cost) {
+        alert(`Insufficient funds. Need $${cost.toLocaleString()}`);
+        return;
+    }
+    
+    GameState.budget -= cost;
+    GameState.financials.currentWeek.infrastructure += cost;
+    chain.pullTabStores += qty;
+    
+    document.getElementById('pullTabMgmtModal').style.display = 'none';
+    updateRetailersPage();
+    updateAllUI(); // Refresh header budget
+    alert(`Installed ${qty} Pull Tab machines in ${chain.name}.\nCost: $${cost.toLocaleString()}`);
+}
+function promoteChain(chainId) {
+    const chain = GameState.chains.find(c => c.id === chainId);
+    if (!chain) return;
+    
+    let cost = 0;
+    let newStoreCount = 0;
+    let actionName = "";
+    
+    // Determine Next Step
+    if (chain.tier === 0) {
+        // PITCH -> PILOT (5 Stores)
+        actionName = "Launch Pilot Program";
+        newStoreCount = Math.min(5, chain.totalStores);
+        cost = newStoreCount * chain.setupCostPerStore + 5000; // +$5k Marketing Fee
+    } else if (chain.tier === 1) {
+        // PILOT -> REGIONAL (30% of stores)
+        actionName = "Regional Expansion";
+        newStoreCount = Math.floor(chain.totalStores * 0.30);
+        cost = (newStoreCount - chain.activeStores) * chain.setupCostPerStore;
+    } else if (chain.tier === 2) {
+        // REGIONAL -> STATEWIDE (100% of stores)
+        actionName = "Statewide Rollout";
+        newStoreCount = chain.totalStores;
+        cost = (newStoreCount - chain.activeStores) * chain.setupCostPerStore;
+    }
+    
+    // Validation
+    if (GameState.budget < cost) {
+        alert(`Insufficient Budget! You need $${cost.toLocaleString()} for this expansion.`);
+        return;
+    }
+    
+    if (!confirm(`${actionName} with ${chain.name}?\n\n• New Stores: +${(newStoreCount - chain.activeStores)}\n• Cost: $${cost.toLocaleString()}`)) {
+        return;
+    }
+    
+    // Execute
+    GameState.budget -= cost;
+    chain.activeStores = newStoreCount;
+    chain.tier += 1;
+    
+    // Add Event
+    GameState.history.events.unshift({
+        date: new Date(GameState.currentDate),
+        dateString: formatDate(GameState.currentDate),
+        title: `PARTNERSHIP EXPANDED: ${chain.name}`,
+        description: `We have expanded operations to ${chain.activeStores} locations.`
+    });
+    
+    updateAllUI();
+}
+
+function getTotalActiveStores() {
+    // Sum of all active stores in all chains + 1 for HQ
+    return GameState.chains.reduce((sum, chain) => sum + chain.activeStores, 0) + 1;
+}
+let currentNegotiation = null;
+
+function openNegotiation(chainId) {
+    const chain = GameState.chains.find(c => c.id === chainId);
+    if (!chain) return;
+
+    currentNegotiation = { chainId: chainId };
+    
+    // Determine the Goal
+    let actionText = "";
+    let baseCost = 0;
+    
+    if (chain.tier === 0) {
+        actionText = "Pilot Program (5 Stores)";
+        baseCost = 5 * chain.setupCostPerStore;
+    } else if (chain.tier === 1) {
+        actionText = "Regional Expansion (30% Stores)";
+        const newCount = Math.floor(chain.totalStores * 0.3);
+        baseCost = (newCount - chain.activeStores) * chain.setupCostPerStore;
+    } else {
+        actionText = "Statewide Saturation (100% Stores)";
+        const newCount = chain.totalStores;
+        baseCost = (newCount - chain.activeStores) * chain.setupCostPerStore;
+    }
+    
+    currentNegotiation.baseCost = baseCost;
+    
+    // Populate UI
+    document.getElementById('negChainName').innerText = `NEGOTIATION: ${chain.name.toUpperCase()}`;
+    document.getElementById('negType').innerText = chain.type;
+    document.getElementById('negPersonality').innerText = chain.personality;
+    document.getElementById('negActionDisplay').innerText = actionText;
+    
+    // Personality Hints
+    const hints = {
+        'GREEDY': "Prioritizes Commission % above all else.",
+        'SKEPTICAL': "Hates risk. Wants a large upfront Cash Bonus.",
+        'VOLUME_FOCUSED': "Wants marketing support (lower setup fees, but high expectations).",
+        'EASYGOING': "Easy to please, but gets annoyed if you lowball."
+    };
+    document.getElementById('negDesc').innerText = hints[chain.personality];
+    
+    // Reset Inputs
+    document.getElementById('offerComm').value = 5;
+    document.getElementById('offerBonus').value = Math.floor(baseCost * 0.1); // Default 10% bonus
+    
+    document.getElementById('negotiationModal').style.display = 'block';
+    updateOfferStats();
+}
+
+function updateOfferStats() {
+    if (!currentNegotiation) return;
+    
+    const comm = parseFloat(document.getElementById('offerComm').value);
+    const bonus = parseInt(document.getElementById('offerBonus').value);
+    const totalCost = currentNegotiation.baseCost + bonus;
+    
+    document.getElementById('offerCommDisplay').innerText = comm.toFixed(1) + "%";
+    document.getElementById('offerBonusDisplay').innerText = "$" + bonus.toLocaleString();
+    document.getElementById('negTotalCost').innerText = "$" + totalCost.toLocaleString();
+    
+    // Calculate Probability
+    const chain = GameState.chains.find(c => c.id === currentNegotiation.chainId);
+    let score = 50; // Base chance
+    
+    // 1. Commission Score
+    const commDiff = comm - 5.0; // difference from standard
+    if (chain.personality === 'GREEDY') score += commDiff * 25; // Huge swing for Greedy
+    else score += commDiff * 15;
+    
+    // 2. Bonus Score
+    // Compare bonus to the base setup cost
+    const bonusRatio = bonus / currentNegotiation.baseCost;
+    if (chain.personality === 'SKEPTICAL') score += bonusRatio * 100; // Loves cash
+    else score += bonusRatio * 50;
+    
+    // 3. Relationship Base
+    score += (chain.relationship - 50) * 0.5;
+    
+    // Clamp
+    score = Math.min(95, Math.max(5, score));
+    
+    // Update Bar
+    const bar = document.getElementById('acceptanceBar');
+    bar.style.width = score + "%";
+    bar.style.backgroundColor = score > 70 ? '#4CAF50' : (score > 40 ? '#f4d03f' : '#ff4444');
+    document.getElementById('acceptanceText').innerText = Math.floor(score) + "%";
+    
+    currentNegotiation.winChance = score;
+}
+
+function closeNegotiation() {
+    document.getElementById('negotiationModal').style.display = 'none';
+}
+
+function submitOffer() {
+    const chain = GameState.chains.find(c => c.id === currentNegotiation.chainId);
+    const comm = parseFloat(document.getElementById('offerComm').value);
+    const bonus = parseInt(document.getElementById('offerBonus').value);
+    const totalCost = currentNegotiation.baseCost + bonus;
+    
+    if (GameState.budget < totalCost) {
+        alert("Insufficient funds for this offer!");
+        return;
+    }
+    
+    // Roll the dice
+    const roll = Math.random() * 100;
+    const success = roll < currentNegotiation.winChance;
+    
+    if (success) {
+        // APPLY DEAL
+        GameState.budget -= totalCost;
+        chain.contract.commission = comm / 100;
+        
+        // Expand Tier
+        if (chain.tier === 0) {
+            chain.tier = 1;
+            chain.activeStores = 5;
+        } else if (chain.tier === 1) {
+            chain.tier = 2;
+            chain.activeStores = Math.floor(chain.totalStores * 0.3);
+        } else {
+            chain.tier = 3;
+            chain.activeStores = chain.totalStores;
+        }
+        
+        // Boost Relationship
+        chain.relationship = Math.min(100, chain.relationship + 15);
+        
+        alert(`AGREEMENT REACHED!\n\n${chain.name} accepted your terms.\nExpansion underway.`);
+    } else {
+        // FAIL
+        // Hurt Relationship
+        chain.relationship = Math.max(0, chain.relationship - 10);
+        alert(`OFFER REJECTED.\n\n${chain.name} was not impressed.\nRelationship dropped to ${chain.relationship}.`);
+    }
+    
+    closeNegotiation();
+    updateAllUI();
+}
+function openPullTabDesigner() {
+    // Basic Madlib name generator for Pull Tabs
+    const names = ["Cherry Bells", "Bar Room Gold", "Red Hot 7s", "Lucky Lager", "Pub Pennies", "Freedom Flyer"];
+    document.getElementById('ptName').value = names[Math.floor(Math.random() * names.length)];
+    document.getElementById('pullTabModal').style.display = 'block';
+    updatePullTabStats();
+}
+
+function updatePullTabStats() {
+    const qty = parseInt(document.getElementById('ptQty').value);
+    const price = parseFloat(document.getElementById('ptPrice').value);
+    const margin = parseFloat(document.getElementById('ptMargin').value);
+    
+    // Costs
+    const printCost = qty * 0.02; // Cheaper to print than scratchers
+    // Setup cost: Assumes we install machines in 50% of current retailers
+    const activeRetailers = getTotalActiveStores();
+    const machineCost = Math.max(2000, activeRetailers * 50); // $50 per store to install bracket
+    
+    // Revenue Est
+    const totalRev = qty * price;
+    const profit = totalRev * margin;
+    
+    document.getElementById('ptQtyDisplay').innerText = qty.toLocaleString();
+    document.getElementById('ptPrintCost').innerText = `-$${printCost.toLocaleString()}`;
+    document.getElementById('ptSetupCost').innerText = `-$${machineCost.toLocaleString()}`;
+    
+    // Estimate steady drip revenue
+    const weeklyEst = (profit / 52) * 2; // Rough estimate
+    document.getElementById('ptWeeklyProfit').innerText = `$${Math.floor(weeklyEst).toLocaleString()} / week`;
+}
+
+function publishPullTab() {
+    const name = document.getElementById('ptName').value;
+    const qty = parseInt(document.getElementById('ptQty').value);
+    const price = parseFloat(document.getElementById('ptPrice').value);
+    const margin = parseFloat(document.getElementById('ptMargin').value);
+    
+    // Calculate final costs
+    const printCost = qty * 0.02;
+    const activeRetailers = getTotalActiveStores();
+    const machineCost = Math.max(2000, activeRetailers * 50); 
+    const totalUpfront = printCost + machineCost;
+    
+    if (GameState.budget < totalUpfront) {
+        alert(`Insufficient Funds. You need $${totalUpfront.toLocaleString()} for printing and dispenser installation.`);
+        return;
+    }
+    
+    GameState.budget -= totalUpfront;
+    
+    // Create Game Object
+    // Note: Pull tabs don't use the complex "Jackpot" system. 
+    // They use a simple "Margin" system because the prizes are small and fixed.
+    const newGame = {
+        id: 'pt_' + Date.now(),
+        name: name,
+        type: 'pulltab', // IMPORTANT: New type
+        price: price,
+        inventory: qty,
+        totalPrinted: qty,
+        totalSold: 0,
+        profitMargin: margin, // Fixed profit margin (e.g., 0.25 means we keep 25 cents on the dollar)
+        
+        // Tracking
+        totalRevenue: 0,
+        totalPrizes: 0,
+        printCost: totalUpfront,
+        active: true,
+        releaseDate: new Date(GameState.currentDate)
+    };
+    
+    GameState.games.push(newGame);
+    document.getElementById('pullTabModal').style.display = 'none';
+    updateAllUI();
+    showPage('games');
+    alert(`${name} Dispatched! Dispensers are being installed in bars and stations.`);
+}
+function simulatePullTabs(holidayBoost) {
+    const config = GameState.pullTabConfig;
+    let totalMachineCount = 0;
+    let totalHandle = 0; 
+    
+    // 1. Calculate Handle (Cash In) per Chain
+    GameState.chains.forEach(chain => {
+        if (chain.pullTabStores > 0) {
+            totalMachineCount += chain.pullTabStores;
+            
+            // Rebalanced Handles (Weekly Cash In)
+            let avgHandle = 0;
+            if (chain.type === 'BAR') avgHandle = 2500;      
+            else if (chain.type === 'GAS') avgHandle = 1000; 
+            else if (chain.type === 'GROCERY') avgHandle = 150; 
+            
+            // Volume Logic: Higher payouts = more play time
+            const playerSatisfaction = (config.payoutRate - 0.60) / 0.25; 
+            const volumeFactor = 0.8 + (playerSatisfaction * 0.4);
+            
+            const chainHandle = chain.pullTabStores * avgHandle * volumeFactor * holidayBoost;
+            
+            // Variance (+/- 15%)
+            const actualHandle = chainHandle * (0.85 + Math.random() * 0.3);
+            
+            totalHandle += actualHandle;
+        }
+    });
+
+    if (totalMachineCount === 0) return { handle: 0, payouts: 0, maintenance: 0, profit: 0 };
+    
+    GameState.pullTabConfig.active = true;
+
+    // 2. Financial Breakdown
+    const payouts = totalHandle * config.payoutRate;
+    const maintenance = totalMachineCount * 50; // $50/machine operating cost
+    
+    return {
+        handle: totalHandle,
+        payouts: payouts, 
+        maintenance: maintenance,
+        profit: totalHandle - payouts - maintenance
+    };
+}
+let currentLottoChainId = null;
+
+function openLottoMgmt(chainId) {
+    const chain = GameState.chains.find(c => c.id === chainId);
+    if (!chain) return;
+    
+    currentLottoChainId = chainId;
+    
+    // UI Updates
+    document.getElementById('lottoMgmtTitle').innerText = `SECURE INSTALL: ${chain.name.toUpperCase()}`;
+    document.getElementById('lottoMgmtName').innerText = chain.name;
+    
+    // Slider Setup
+    const available = chain.activeStores - chain.lottoMachines;
+    const slider = document.getElementById('lottoInstallQty');
+    slider.min = 0;
+    slider.max = available;
+    slider.value = 0;
+    
+    document.getElementById('lottoAvailable').innerText = `Available Locations: ${available}`;
+    updateLottoInstallCalc();
+    document.getElementById('lottoMgmtModal').style.display = 'block';
+}
+
+function updateLottoInstallCalc() {
+    const qty = parseInt(document.getElementById('lottoInstallQty').value);
+    
+    const cost = qty * 10000; // $10k per machine
+    const upkeep = qty * 10;  // $10/week upkeep
+    
+    document.getElementById('lottoInstallCount').innerText = `${qty} Terminals`;
+    document.getElementById('lottoInstallCost').innerText = `-$${cost.toLocaleString()}`;
+    document.getElementById('lottoInstallUpkeep').innerText = `-$${upkeep.toLocaleString()}/week`;
+}
+
+function commitLottoInstall() {
+    const chain = GameState.chains.find(c => c.id === currentLottoChainId);
+    const qty = parseInt(document.getElementById('lottoInstallQty').value);
+    const cost = qty * 10000;
+    
+    if (qty === 0) return;
+    
+    if (GameState.budget < cost) {
+        alert(`Insufficient funds. Security hardware is expensive!\nNeed $${cost.toLocaleString()}`);
+        return;
+    }
+    
+    // Deduct and Track
+    GameState.budget -= cost;
+    if(GameState.financials && GameState.financials.currentWeek) {
+        GameState.financials.currentWeek.infrastructure += cost;
+    }
+
+    chain.lottoMachines += qty;
+    
+    document.getElementById('lottoMgmtModal').style.display = 'none';
+    updateRetailersPage();
+    updateAllUI();
+    alert(`Authorized ${qty} Secure Terminals for ${chain.name}.\nCost: $${cost.toLocaleString()}`);
+}
+function openInstaplayDesigner() {
+    const modal = document.getElementById('instaplayModal');
+    if (!modal) return;
+    
+    modal.style.display = 'block';
+    
+    // Set some defaults
+    generateInstaplayName();
+    updateInstaplayMath(); // <--- IMPORTANT: Run math on open
+}
+
+function publishInstaplay() {
+    const name = document.getElementById('ipName').value;
+    const price = parseInt(document.getElementById('ipPrice').value);
+    const startJackpot = parseInt(document.getElementById('ipBaseJackpot').value);
+    const flavor = document.getElementById('ipFlavor').value;
+    
+    // NEW FIELDS
+    const smallPct = parseInt(document.getElementById('ipSmallPct').value);
+    const jackpotPct = parseInt(document.getElementById('ipJackpotPct').value);
+    const odds = parseInt(document.getElementById('ipOdds').value);
+    
+    const devCost = 5000;
+    const totalCost = devCost + startJackpot; 
+
+    // Validation
+    let totalTerminals = 0;
+    GameState.chains.forEach(c => totalTerminals += (c.lottoMachines || 0));
+    
+    if (totalTerminals === 0) {
+        alert("System Error: No Lotto Terminals detected!");
+        return;
+    }
+    if (GameState.budget < totalCost) {
+        alert(`Insufficient funds. Need $${totalCost.toLocaleString()}.`);
+        return;
+    }
+
+    // Pay Upfront
+    GameState.budget -= totalCost;
+    if(GameState.financials && GameState.financials.currentWeek) {
+        GameState.financials.currentWeek.printing += devCost; 
+        GameState.financials.currentWeek.instaplayPayouts += startJackpot; 
+    }
+
+    const newGame = {
+        id: 'ip_' + Date.now(),
+        name: name,
+        type: 'instaplay',
+        flavor: flavor,
+        price: price,
+        
+        // NEW MATH CONFIG
+        smallPrizePct: smallPct,
+        jackpotFundPct: jackpotPct,
+        winOdds: odds,
+        
+        baseJackpot: startJackpot,
+        currentJackpot: startJackpot,
+        
+        totalRevenue: 0,
+        totalPrizes: 0,
+        active: true,
+        releaseDate: new Date(GameState.currentDate)
+    };
+
+    GameState.games.push(newGame);
+    document.getElementById('instaplayModal').style.display = 'none';
+    updateAllUI();
+    showGameTab('lotto'); 
+    alert(`${name} launched!\nOdds set to 1 in ${odds.toLocaleString()}.`);
+}
+function generateInstaplayName() {
+    const prefixes = ["Cyber", "Digital", "Neon", "Quick", "Lightning", "Turbo", "Pixel", "Insta", "Flash", "Mega", "Hyper", "Electronic"];
+    const nouns = ["Cash", "Gold", "Riches", "7s", "Payout", "Fortune", "Gems", "Jackpot", "Money", "Bucks", "Bank", "Win"];
+    const suffixes = ["Pro", "X", "2000", "Plus", "Extreme", "Live", "Now"];
+
+    const p = prefixes[Math.floor(Math.random() * prefixes.length)];
+    const n = nouns[Math.floor(Math.random() * nouns.length)];
+    
+    let name = `${p} ${n}`;
+    if (Math.random() > 0.7) {
+        const s = suffixes[Math.floor(Math.random() * suffixes.length)];
+        name += ` ${s}`;
+    }
+    
+    document.getElementById('ipName').value = name;
+}
+function simulateInstaplaySales(game, holidayBoost) {
+    const sales = { revenue: 0, prizesPaid: 0, jackpotHit: false };
+
+    // 1. Check Network
+    let totalTerminals = 0;
+    GameState.chains.forEach(c => totalTerminals += (c.lottoMachines || 0));
+    if (totalTerminals === 0) return sales;
+
+    // 2. Determine Demand
+    // Volatility Logic:
+    // If Jackpot is HUGE relative to Base, demand skyrockets (Progressive only)
+    let hype = 1.0;
+    if (game.flavor === 'progressive') {
+        const multiple = game.currentJackpot / game.baseJackpot;
+        // Hype scales with jackpot size
+        hype = Math.min(15, Math.max(1, multiple)); 
+    }
+
+    const baseDemand = totalTerminals * 50;
+    // Demand Variance
+    const demand = baseDemand * hype * holidayBoost;
+    const ticketsSold = Math.floor(demand * (0.8 + Math.random() * 0.4));
+    
+    sales.revenue = ticketsSold * game.price;
+
+    // 3. EXPENSES (Using Specific Sliders)
+    
+    // A. Small Prizes (The "Churn" Slider)
+    // If user set 0%, this is 0. If 70%, it's high.
+    const smallPrizes = sales.revenue * (game.smallPrizePct / 100);
+    
+    // B. Jackpot Funding (The "Growth" Slider)
+    // If user set 70%, pot grows massive fast.
+    const potContribution = sales.revenue * (game.jackpotFundPct / 100);
+    game.currentJackpot += potContribution;
+    
+    // Total immediate expense for us
+    sales.prizesPaid = smallPrizes + potContribution;
+
+    // 4. WIN CHECK (Using Specific Odds)
+    // Use the exact odds the user set (e.g., 5000)
+    const hitChance = ticketsSold / game.winOdds;
+
+    if (Math.random() < hitChance) {
+        sales.jackpotHit = true;
+        
+        // Reset Logic:
+        // We pay the Base Jackpot to re-seed.
+        // We do NOT pay the currentJackpot from budget (it was pre-funded).
+        const reseedCost = game.baseJackpot;
+        sales.prizesPaid += reseedCost; 
+        
+        game.currentJackpot = game.baseJackpot;
+    }
+
+    // Stats
+    game.totalRevenue += sales.revenue;
+    game.totalPrizes += sales.prizesPaid;
+
+    return sales;
+}
+function updateInstaplayPreview() {
+    const flavor = document.getElementById('ipFlavor').value;
+    const desc = document.getElementById('ipFlavorDesc');
+    const model = document.getElementById('ipSalesModel');
+    const type = document.getElementById('ipJackpotType');
+
+    if (flavor === 'steady') {
+        desc.innerText = "Reliable weekly sales. No volatility. Acts like a digital scratcher.";
+        model.innerText = "Consistent / Flat";
+        model.style.color = "#4CAF50";
+        type.innerText = "Fixed Prize (Static)";
+    } else {
+        desc.innerText = "Sales start low but explode as jackpot grows. High Volatility.";
+        model.innerText = "Hype-Driven / Volatile";
+        model.style.color = "#E91E63";
+        type.innerText = "Progressive (Rolling)";
+    }
+}
+function updateInstaplayMath() {
+    // 1. Get Values
+    const smallPct = parseInt(document.getElementById('ipSmallPct').value);
+    const jackpotPct = parseInt(document.getElementById('ipJackpotPct').value);
+    const odds = parseInt(document.getElementById('ipOdds').value);
+    const baseJackpot = parseInt(document.getElementById('ipBaseJackpot').value);
+    
+    // 2. Update Text Displays
+    document.getElementById('dispSmall').innerText = smallPct + "%";
+    document.getElementById('dispJackpot').innerText = jackpotPct + "%";
+    document.getElementById('dispOdds').innerText = `1 in ${odds.toLocaleString()}`;
+    
+    // 3. RTP Calculation
+    const totalRTP = smallPct + jackpotPct;
+    const rtpEl = document.getElementById('calcRTP');
+    rtpEl.innerText = totalRTP + "%";
+    
+    // Warn if unprofitable
+    if (totalRTP > 95) rtpEl.style.color = "#ff4444"; // Losing money
+    else if (totalRTP < 50) rtpEl.style.color = "#E91E63"; // Too greedy
+    else rtpEl.style.color = "#4CAF50"; // Good
+    
+    // 4. Winner Frequency Prediction
+    // Based on ACTUAL terminal count
+    let totalTerminals = 0;
+    if (GameState.chains) {
+        GameState.chains.forEach(c => totalTerminals += (c.lottoMachines || 0));
+    }
+    
+    // Estimate sales: 50 tix per machine per week average
+    const estWeeklyTickets = Math.max(1, totalTerminals * 50); 
+    const winnersPerWeek = estWeeklyTickets / odds;
+    
+    const winEl = document.getElementById('calcWinners');
+    if (winnersPerWeek >= 1) {
+        winEl.innerText = `${winnersPerWeek.toFixed(1)} / week`;
+    } else {
+        const weeksPerWin = 1 / winnersPerWeek;
+        winEl.innerText = `Once every ${Math.round(weeksPerWin)} weeks`;
+    }
+    
+    // 5. Cost
+    const totalCost = 5000 + baseJackpot;
+    document.getElementById('calcCost').innerText = `$${totalCost.toLocaleString()}`;
 }
