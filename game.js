@@ -241,7 +241,19 @@ function simulateWeek(holiday) {
     ledger.pullTabHandle += ptStats.handle;
     ledger.pullTabPayouts += ptStats.payouts;
     ledger.maintenance += ptStats.maintenance;
-    
+    GameState.games.forEach(game => {
+        if (game.active && game.type === 'draw') {
+            const drawStats = simulateDrawGame(game, holidayBoost);
+            
+            ledger.instaplaySales += drawStats.revenue; 
+            ledger.instaplayPayouts += drawStats.prizesPaid; // Now includes Contribution + Re-seed
+            
+            ledger.maintenance += 5000; // <--- Broadcast fee handled here
+            
+            // ... events ...
+        }
+    });
+
     // 5. Calculate Lotto Machine Upkeep
     let totalLottoMachines = 0;
     GameState.chains.forEach(c => totalLottoMachines += (c.lottoMachines || 0));
@@ -1059,22 +1071,78 @@ function updateGamesPage() {
     const lottoContainer = document.querySelector('#lotto-tab');
     const lotteryContainer = document.querySelector('#lottery-tab');
     
-    // 2. RENDER LOTTERY TAB (Scratch & Pull Tabs)
+    // =====================================================
+    // TAB 1: LOTTERY (Scratch & Pull Tabs)
+    // =====================================================
     if (lotteryContainer) {
+        // A. Scratch Tickets
         const scratchGames = GameState.games.filter(g => g.type === 'scratch' && g.active);
         
+        // B. Pull Tab Operations
+        // Only show if machines exist in the network
         let ptHtml = '';
-        // Only show Pull Tab Operations if machines exist
         const totalMachines = GameState.chains.reduce((acc, c) => acc + (c.pullTabStores || 0), 0);
+        
         if (totalMachines > 0) {
+            // Calculate network financials for display
+            const h = GameState.financials.history; 
+            // Note: In a real app we'd want current week stats, but history is fine for a general dashboard
+            
             ptHtml = `
                 <div class="page-section" style="margin-top: 40px; border-top: 1px solid #333; padding-top: 20px;">
                     <h3>Pull Tab Operations</h3>
+                    <p style="color:#888; font-size: 0.9em; margin-bottom: 15px;">
+                        Automated Vending Network. 
+                    </p>
                     <div class="dashboard-card" style="background: #1a1a2e; border: 1px solid #e65100; padding: 20px;">
-                        <div style="color: #e65100; font-weight: bold;">NETWORK ACTIVE</div>
-                        <div style="font-size: 1.5em; color: #fff;">${totalMachines.toLocaleString()} Machines</div>
+                        <div style="display: flex; justify-content: space-between; align-items: center;">
+                            <div>
+                                <div style="color: #e65100; font-weight: bold;">NETWORK STATUS</div>
+                                <div style="font-size: 1.5em; color: #fff;">${totalMachines.toLocaleString()} <span style="font-size: 0.6em; color: #888;">Active Machines</span></div>
+                            </div>
+                            <div style="text-align: right;">
+                                <div style="color: #aaa; font-size: 0.8em;">Lifetime Handle</div>
+                                <div style="color: #fff; font-weight: bold;">$${Math.floor(h.pullTabHandle).toLocaleString()}</div>
+                            </div>
+                        </div>
                     </div>
                 </div>`;
+        }
+
+        // Render Scratch List using helper or inline
+        let scratchHtml = '';
+        if (scratchGames.length === 0) {
+            scratchHtml = `<p style="color: #666; font-style: italic;">No active scratch tickets.</p>`;
+        } else {
+            scratchHtml = `<div class="game-list">`;
+            scratchGames.forEach(game => {
+                const profit = game.totalRevenue - game.totalPrizes - game.printCost;
+                const profitColor = profit >= 0 ? '#4CAF50' : '#ff4444';
+                const stockPct = (game.inventory / game.totalPrinted) * 100;
+
+                scratchHtml += `
+                    <div class="game-card" style="background: #16213e; border: 1px solid #444; padding: 15px; margin-bottom: 15px; border-left: 4px solid ${profitColor};">
+                        <div style="display: flex; justify-content: space-between; margin-bottom: 10px;">
+                            <div>
+                                <strong style="color: #f4d03f; font-size: 1.1em;">🎫 ${game.name}</strong>
+                                <span style="background: #000; padding: 2px 6px; border-radius: 4px; font-size: 0.8em; margin-left: 10px;">$${game.price}</span>
+                            </div>
+                            <div style="color: ${profitColor}; font-weight: bold;">$${profit.toLocaleString()}</div>
+                        </div>
+                        
+                        <div style="display: flex; justify-content: space-between; font-size: 0.8em; color: #ccc;">
+                            <div>Top Prize: $${game.topPrize.toLocaleString()}</div>
+                            <div>Sales: $${game.totalRevenue.toLocaleString()}</div>
+                        </div>
+                        
+                        <div style="margin-top: 10px; background: #000; height: 6px; border-radius: 3px; overflow: hidden;">
+                            <div style="width: ${stockPct}%; background: #2196F3; height: 100%;"></div>
+                        </div>
+                        <div style="text-align: right; font-size: 0.7em; color: #666; margin-top: 2px;">${game.inventory.toLocaleString()} remaining</div>
+                    </div>
+                `;
+            });
+            scratchHtml += `</div>`;
         }
 
         lotteryContainer.innerHTML = `
@@ -1083,18 +1151,20 @@ function updateGamesPage() {
                     <h3>Active Scratch Tickets</h3>
                     <button class="small-btn" onclick="openGameDesigner()">+ NEW SCRATCHER</button>
                 </div>
-                ${renderGameList(scratchGames, 'scratch')}
+                ${scratchHtml}
             </div>
             ${ptHtml}
         `;
     }
 
-    // 3. RENDER LOTTO TAB (Instaplay)
+    // =====================================================
+    // TAB 2: LOTTO (Instaplay & Draw Games)
+    // =====================================================
     if (lottoContainer) {
-        // FILTER FIX: Ensure we catch 'instaplay' type correctly
+        // C. Instaplay Games
         const instaGames = GameState.games.filter(g => g.type === 'instaplay' && g.active);
-
-        let html = `
+        
+        let instaHtml = `
             <div class="page-section">
                 <div style="display:flex; justify-content:space-between; align-items:center;">
                     <h3>Active Instaplay Games</h3>
@@ -1106,23 +1176,23 @@ function updateGamesPage() {
         `;
 
         if (instaGames.length === 0) {
-            html += `<p style="color: #666; font-style: italic;">No active Instaplay games.</p>`;
+            instaHtml += `<p style="color: #666; font-style: italic;">No active Instaplay games.</p>`;
         } else {
-            html += `<div class="game-list">`;
+            instaHtml += `<div class="game-list">`;
             instaGames.forEach(game => {
-                // Calculate Net Profit (Revenue - Prizes - Funding Contributions)
-                // Note: We track totalPrizes as "Small Prizes + Jackpot Hits"
-                const profit = game.totalRevenue - game.totalPrizes; 
+                const profit = game.totalRevenue - game.totalPrizes;
                 const profitColor = profit >= 0 ? '#4CAF50' : '#ff4444';
                 const isProgressive = game.flavor !== 'steady';
+                const typeLabel = isProgressive ? 'Progressive' : 'Steady';
+                const typeColor = isProgressive ? '#E91E63' : '#4CAF50';
                 
-                html += `
+                instaHtml += `
                     <div class="game-card" style="background: #16213e; border: 1px solid #E91E63; padding: 15px; margin-bottom: 15px; border-left: 4px solid #E91E63;">
                         <div style="display: flex; justify-content: space-between; margin-bottom: 10px;">
                             <div>
                                 <strong style="color: #E91E63; font-size: 1.1em;">⚡ ${game.name}</strong>
                                 <span style="background: #000; padding: 2px 6px; border-radius: 4px; font-size: 0.8em; margin-left: 10px;">$${game.price}</span>
-                                <span style="font-size: 0.8em; color: #aaa; margin-left: 10px;">(${game.payoutPct}% Payout)</span>
+                                <span style="font-size: 0.7em; color: ${typeColor}; border: 1px solid ${typeColor}; padding: 1px 4px; margin-left: 5px; border-radius: 3px;">${typeLabel}</span>
                             </div>
                             <div style="color: ${profitColor}; font-weight: bold;">$${profit.toLocaleString()}</div>
                         </div>
@@ -1135,17 +1205,68 @@ function updateGamesPage() {
                                 </div>
                             </div>
                             <div style="text-align: right; font-size: 0.8em; color: #ccc;">
-                                Sales: $${game.totalRevenue.toLocaleString()}<br>
-                                Type: ${isProgressive ? 'Progressive' : 'Steady'}
+                                Sales: $${game.totalRevenue.toLocaleString()}
                             </div>
                         </div>
                     </div>
                 `;
             });
-            html += `</div>`;
+            instaHtml += `</div>`;
         }
+        instaHtml += `</div>`;
+
+        // D. Draw Games
+        const drawGames = GameState.games.filter(g => g.type === 'draw' && g.active);
         
-        lottoContainer.innerHTML = html;
+        let drawHtml = `
+            <div class="page-section" style="margin-top: 40px; border-top: 1px solid #333; padding-top: 20px;">
+                <div style="display:flex; justify-content:space-between; align-items:center;">
+                    <h3>Televised Draw Games</h3>
+                    <button class="small-btn" onclick="openDrawGameDesigner()">+ NEW BROADCAST</button>
+                </div>
+        `;
+        
+        if (drawGames.length === 0) {
+            drawHtml += `<p style="color: #666; font-style: italic;">No active draw games.</p>`;
+        } else {
+            drawHtml += `<div class="game-list">`;
+            drawGames.forEach(game => {
+                const profit = game.totalRevenue - game.totalPrizes;
+                const profitColor = profit >= 0 ? '#4CAF50' : '#ff4444';
+                
+                // NEW: Get last week's sales (or 0 if new)
+                const weeklySales = game.lastWeekSales || 0;
+                
+                drawHtml += `
+                    <div class="game-card" style="background: #16213e; border: 1px solid #9C27B0; padding: 15px; margin-bottom: 15px; border-left: 4px solid #9C27B0;">
+                        <div style="display: flex; justify-content: space-between; margin-bottom: 10px;">
+                            <div>
+                                <strong style="color: #9C27B0; font-size: 1.1em;">📺 ${game.name}</strong>
+                                <span style="background: #000; padding: 2px 6px; border-radius: 4px; font-size: 0.8em; margin-left: 10px;">$${game.price}</span>
+                            </div>
+                            <div style="color: ${profitColor}; font-weight: bold;">$${profit.toLocaleString()}</div>
+                        </div>
+                        
+                        <div style="display: flex; justify-content: space-between; align-items: flex-end;">
+                            <div>
+                                <div style="font-size: 0.7em; color: #aaa;">NEXT DRAW JACKPOT</div>
+                                <div style="font-size: 1.5em; color: #fff; font-weight: bold; text-shadow: 0 0 10px #9C27B0;">
+                                    $${Math.floor(game.currentJackpot).toLocaleString()}
+                                </div>
+                            </div>
+                            <div style="text-align: right; font-size: 0.8em; color: #ccc;">
+                                <div style="color: #fff; font-weight: bold;">$${weeklySales.toLocaleString()} / week</div>
+                                <div style="font-size: 0.9em; margin-top: 3px;">Draws: ${game.drawFreq}/wk</div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            });
+            drawHtml += `</div>`;
+        }
+        drawHtml += `</div>`;
+        
+        lottoContainer.innerHTML = instaHtml + drawHtml;
     }
 }
 function updatePullTabInstallCalc() {
@@ -2052,4 +2173,209 @@ function updateInstaplayMath() {
     // 5. Cost
     const totalCost = 5000 + baseJackpot;
     document.getElementById('calcCost').innerText = `$${totalCost.toLocaleString()}`;
+}
+let currentPrizeTiers = [
+    { name: "Jackpot", prize: 0, odds: 1000000, isJackpot: true }, // Dynamic prize
+    { name: "Match 5", prize: 10000, odds: 50000, isJackpot: false },
+    { name: "Match 4", prize: 100, odds: 500, isJackpot: false },
+    { name: "Match 3", prize: 7, odds: 50, isJackpot: false }
+];
+
+function openDrawGameDesigner() {
+    document.getElementById('drawGameModal').style.display = 'block';
+    renderPrizeTable();
+}
+
+function renderPrizeTable() {
+    const tbody = document.getElementById('prizeTableBody');
+    tbody.innerHTML = '';
+    
+    currentPrizeTiers.forEach((tier, index) => {
+        const tr = document.createElement('tr');
+        
+        // Jackpot row is special (read only prize)
+        const prizeInput = tier.isJackpot 
+            ? `<span style="color:#9C27B0; font-weight:bold;">JACKPOT + Growth</span>`
+            : `<input type="number" value="${tier.prize}" style="width:80px; padding:5px;" onchange="updateTier(${index}, 'prize', this.value)">`;
+            
+        const removeBtn = tier.isJackpot 
+            ? `` 
+            : `<button onclick="removePrizeTier(${index})" style="background:#ff4444; border:none; color:white; padding:2px 6px; cursor:pointer;">×</button>`;
+
+        tr.innerHTML = `
+            <td><input type="text" value="${tier.name}" style="width:100px; padding:5px;" onchange="updateTier(${index}, 'name', this.value)"></td>
+            <td>${prizeInput}</td>
+            <td>1 in <input type="number" value="${tier.odds}" style="width:80px; padding:5px;" onchange="updateTier(${index}, 'odds', this.value)"></td>
+            <td>${removeBtn}</td>
+        `;
+        tbody.appendChild(tr);
+    });
+    
+    updateDrawStats();
+}
+
+function addPrizeTier() {
+    if (currentPrizeTiers.length >= 8) {
+        alert("Maximum 8 prize tiers allowed.");
+        return;
+    }
+    currentPrizeTiers.push({ name: "New Tier", prize: 10, odds: 100, isJackpot: false });
+    renderPrizeTable();
+}
+
+function removePrizeTier(index) {
+    currentPrizeTiers.splice(index, 1);
+    renderPrizeTable();
+}
+
+function updateTier(index, field, value) {
+    if (field === 'prize' || field === 'odds') value = parseInt(value);
+    currentPrizeTiers[index][field] = value;
+    updateDrawStats();
+}
+
+function updateDrawStats() {
+    // 1. Calculate Overall Odds
+    // Probability = Sum(1/odds)
+    let totalProb = 0;
+    let expectedReturn = 0; // For small prizes
+    
+    currentPrizeTiers.forEach(tier => {
+        if (tier.odds > 0) {
+            totalProb += (1 / tier.odds);
+            if (!tier.isJackpot) {
+                expectedReturn += (tier.prize * (1 / tier.odds));
+            }
+        }
+    });
+    
+    const overallOdds = totalProb > 0 ? (1 / totalProb) : 0;
+    
+    // RTP % for fixed prizes (Ticket Price is usually $1 or $2, let's grab from UI)
+    const price = parseInt(document.getElementById('drawPrice').value);
+    const rtpPct = (expectedReturn / price) * 100;
+
+    document.getElementById('calcDrawOdds').innerText = `1 in ${overallOdds.toFixed(1)}`;
+    const rtpEl = document.getElementById('calcDrawRTP');
+    rtpEl.innerText = `${rtpPct.toFixed(1)}%`;
+    
+    // Warn if RTP is too high (losing money on fixed prizes alone!)
+    if (rtpPct > 90) rtpEl.style.color = '#ff4444';
+    else rtpEl.style.color = '#fff';
+}
+function publishDrawGame() {
+    const name = document.getElementById('drawName').value;
+    if (!name) { alert("Please name your game."); return; }
+    
+    const price = parseInt(document.getElementById('drawPrice').value);
+    const startJackpot = parseInt(document.getElementById('drawBaseJackpot').value);
+    const freq = parseInt(document.getElementById('drawFreq').value);
+    
+    const setupCost = 50000; // Studio Setup
+    const reserveCost = startJackpot; // Initial Jackpot Funding
+    const totalCost = setupCost + reserveCost;
+
+    if (GameState.budget < totalCost) {
+        alert(`Insufficient funds. Need $${totalCost.toLocaleString()} (Studio + Jackpot Reserve).`);
+        return;
+    }
+
+    GameState.budget -= totalCost;
+    // Log Expense (Split between infrastructure and payouts)
+    if(GameState.financials && GameState.financials.currentWeek) {
+        GameState.financials.currentWeek.infrastructure += setupCost;
+        GameState.financials.currentWeek.scratchPayouts += reserveCost; // Using scratch bucket for general payouts for now
+    }
+
+    const newGame = {
+        id: 'draw_' + Date.now(),
+        name: name,
+        type: 'draw', // NEW TYPE
+        price: price,
+        drawFreq: freq, // Draws per week
+        
+        // Jackpot
+        baseJackpot: startJackpot,
+        currentJackpot: startJackpot,
+        
+        // Data
+        tiers: JSON.parse(JSON.stringify(currentPrizeTiers)), // Deep copy
+        
+        // Stats
+        totalRevenue: 0,
+        totalPrizes: 0,
+        active: true,
+        releaseDate: new Date(GameState.currentDate)
+    };
+
+    GameState.games.push(newGame);
+    document.getElementById('drawGameModal').style.display = 'none';
+    updateAllUI();
+    showGameTab('lotto');
+    alert(`BROADCAST LIVE!\n${name} is now on air.`);
+}
+function simulateDrawGame(game, holidayBoost) {
+    const stats = { revenue: 0, prizesPaid: 0, events: [] };
+    
+    // 1. Determine Weekly Sales Volume
+    const retailers = getTotalActiveStores();
+    if (retailers === 0) return stats;
+    
+    // Hype Factor (Jackpot Fatigue vs Fever)
+    let hype = Math.pow(game.currentJackpot / game.baseJackpot, 1.5);
+    hype = Math.min(50, Math.max(1, hype)); 
+    
+    const baseWeeklyTickets = retailers * 200;
+    const totalWeeklyTickets = Math.floor(baseWeeklyTickets * hype * holidayBoost);
+    
+    stats.revenue = totalWeeklyTickets * game.price;
+    game.lastWeekSales = stats.revenue; // <--- NEW: Saved for UI
+    
+    // 2. Fixed Costs (Broadcast) -> Handled in simulateWeek as Maintenance
+    
+    // 3. Process The Draws
+    const ticketsPerDraw = Math.floor(totalWeeklyTickets / game.drawFreq);
+    
+    for (let i = 0; i < game.drawFreq; i++) {
+        // A. Fixed Tier Payouts (Instant cash expenses)
+        game.tiers.forEach(tier => {
+            if (!tier.isJackpot) {
+                const winners = Math.floor(ticketsPerDraw / tier.odds);
+                stats.prizesPaid += winners * tier.prize;
+            }
+        });
+
+        // B. Jackpot Contribution (The Reserve Model)
+        // We "spend" this money now to fund the pot, so it doesn't kill us later.
+        const drawRevenue = ticketsPerDraw * game.price;
+        const growth = drawRevenue * 0.30; // 30% goes to pot
+        
+        game.currentJackpot += growth;
+        stats.prizesPaid += growth; // <--- CRITICAL: Expense it now!
+        
+        // C. Jackpot Win Check
+        const jackpotTier = game.tiers.find(t => t.isJackpot);
+        const winners = Math.floor(ticketsPerDraw / jackpotTier.odds);
+        
+        // Random Probability for edge cases
+        const partialWinChance = (ticketsPerDraw / jackpotTier.odds) % 1;
+        let hit = winners > 0 || Math.random() < partialWinChance;
+
+        if (hit) {
+            // WINNER!
+            // We DO NOT pay game.currentJackpot here. It's already funded.
+            stats.events.push(`JACKPOT HIT! $${Math.floor(game.currentJackpot).toLocaleString()} won on ${game.name}`);
+            
+            // We ONLY pay to re-seed the new pot
+            stats.prizesPaid += game.baseJackpot; 
+            
+            // Reset
+            game.currentJackpot = game.baseJackpot;
+        }
+    }
+    
+    game.totalRevenue += stats.revenue;
+    game.totalPrizes += stats.prizesPaid;
+    
+    return stats;
 }

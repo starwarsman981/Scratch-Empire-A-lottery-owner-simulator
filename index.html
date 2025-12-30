@@ -212,7 +212,7 @@
                         <h3>Instaplay Games</h3>
                         <p style="color: #888; font-style: italic;">No active instaplay games. Instaplays are digital instant-win games played on lottery terminals. Requires terminal network infrastructure.</p>
                     </div>
-                    <button class="btn" style="margin-top: 20px;">+ CREATE BALL DRAW GAME</button>
+                    <button class="btn" style="margin-top: 20px;" onclick="openDrawGameDesigner()">+ CREATE BALL DRAW GAME</button>
                     <button class="btn" style="margin-top: 10px;">+ JOIN MULTI-STATE LOTTERY</button>
                     <button class="btn" style="margin-top: 10px;" onclick="openInstaplayDesigner()">+ CREATE INSTAPLAY GAME</button>
                 </div>
@@ -760,6 +760,98 @@
             </div>
 
             <button class="btn" style="width: 100%; margin-top: 20px; background: #880E4F; border-color: #E91E63;" onclick="publishInstaplay()">PAY & LAUNCH</button>
+        </div>
+    </div>
+</div>
+<div id="drawGameModal" class="modal">
+    <div class="modal-content" style="max-width: 700px; border-color: #9C27B0;">
+        <div class="modal-header" style="background: #4A148C; border-bottom: 1px solid #9C27B0;">
+            <h2 style="color: #fff;">DESIGN DRAW GAME</h2>
+            <span class="close-btn" onclick="document.getElementById('drawGameModal').style.display='none'">&times;</span>
+        </div>
+        
+        <div style="padding: 25px;">
+            <p style="color: #ccc; font-size: 0.9em; margin-bottom: 20px;">
+                Create a classic Lotto game. Requires a TV Broadcast contract (High Upkeep).
+                <br><strong>Key Strategy:</strong> Harder odds = Bigger jackpots = More sales later.
+            </p>
+
+            <div class="form-row">
+                <div class="form-group" style="flex: 2;">
+                    <label>Game Name (Required)</label>
+                    <input type="text" id="drawName" placeholder="e.g. Iowa Powerball">
+                </div>
+                <div class="form-group">
+                    <label>Ticket Cost</label>
+                    <select id="drawPrice">
+                        <option value="1">$1.00</option>
+                        <option value="2">$2.00</option>
+                        <option value="5">$5.00</option>
+                    </select>
+                </div>
+            </div>
+
+            <div class="form-row">
+                <div class="form-group">
+                    <label>Draw Schedule</label>
+                    <select id="drawFreq">
+                        <option value="1">Weekly (Saturday)</option>
+                        <option value="2">Bi-Weekly (Wed / Sat)</option>
+                        <option value="7">Daily (7 Days/Week)</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Starting Jackpot</label>
+                    <select id="drawBaseJackpot">
+                        <option value="100000">$100,000</option>
+                        <option value="500000">$500,000</option>
+                        <option value="1000000">$1,000,000 (Statewide)</option>
+                        <option value="2000000">$2,000,000 (Mega)</option>
+                    </select>
+                </div>
+            </div>
+
+            <div style="background: #222; padding: 15px; border-radius: 5px; border: 1px solid #444; margin-bottom: 20px;">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 10px; border-bottom: 1px solid #444; padding-bottom: 5px;">
+                    <h4 style="color: #9C27B0; margin: 0;">PRIZE STRUCTURE</h4>
+                    <button class="small-btn" onclick="addPrizeTier()" style="font-size: 0.8em;">+ ADD TIER</button>
+                </div>
+
+                <table style="width: 100%; color: #eee; font-size: 0.9em;">
+                    <thead>
+                        <tr style="text-align: left; color: #888;">
+                            <th>Tier Name</th>
+                            <th>Prize ($)</th>
+                            <th>Odds (1 in X)</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody id="prizeTableBody">
+                        </tbody>
+                </table>
+            </div>
+
+            <div style="background: #111; padding: 15px; border-radius: 4px; border: 1px solid #444;">
+                <div class="stat-row">
+                    <span>Overall Odds of Winning:</span>
+                    <span id="calcDrawOdds" style="color: #fff;">1 in --</span>
+                </div>
+                <div class="stat-row">
+                    <span>Est. Return To Player (Small Prizes):</span>
+                    <span id="calcDrawRTP" style="color: #fff;">--%</span>
+                </div>
+                <div class="stat-row separator"></div>
+                <div class="stat-row">
+                    <span>Broadcast Studio Setup:</span>
+                    <span style="color: #ff4444;">-$50,000</span>
+                </div>
+                <div class="stat-row">
+                    <span>Weekly TV Contract (Upkeep):</span>
+                    <span style="color: #ff4444;">-$5,000 / week</span>
+                </div>
+            </div>
+
+            <button class="btn" style="width: 100%; margin-top: 20px; background: #4A148C; border-color: #9C27B0;" onclick="publishDrawGame()">ESTABLISH BROADCAST & LAUNCH</button>
         </div>
     </div>
 </div>
