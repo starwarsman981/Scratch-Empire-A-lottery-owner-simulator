@@ -179,8 +179,7 @@ function advanceWeek() {
     // Update UI
     updateAllUI();
     
-    // Show week summary
-    showWeekSummary(weekResults);
+
 }
 
 function simulateWeek(holiday) {
@@ -198,7 +197,14 @@ function simulateWeek(holiday) {
     // 1. Staffing & Operations
     const activeGamesCount = GameState.games.filter(g => g.active).length;
     const activeRetailerCount = getTotalActiveStores();
-    const staffingCost = 20000 + (activeGamesCount * 1000) + (activeRetailerCount * 100);
+    // Safety check for old saves
+    if (!GameState.office) GameState.office = { baseUpkeep: 20000 }; 
+    
+    const baseUpkeep = GameState.office.baseUpkeep;
+    // Lower variable costs to help early game profitability
+    const variableCost = (activeGamesCount * 200) + (activeRetailerCount * 50); 
+    
+    const staffingCost = baseUpkeep + variableCost;
     ledger.staffing += staffingCost;
     
     // 2. Process Scratch Tickets
@@ -301,92 +307,70 @@ function simulateWeek(holiday) {
     
     return results;
 }
+// =====================================================
+// MATH HELPERS
+// =====================================================
 
+function applyVariance(baseValue, volatility) {
+    if (baseValue <= 0) return 0;
+    
+    // 1. Percentage Swing (e.g. 0.2 = +/- 20%)
+    const swing = 1 + ((Math.random() * (volatility * 2)) - volatility);
+    let result = baseValue * swing;
+    
+    // 2. Micro-Chaos (Adds +/- 2 to prevent clean numbers like "100.00")
+    result += (Math.random() * 4) - 2;
+    
+    return Math.max(0, result);
+}
 function simulateGameSales(game, holidayBoost) {
-    const sales = {
-        revenue: 0,
-        prizesPaid: 0,
-        ticketsSold: 0,
-        bigWinner: null
-    };
+    const sales = { revenue: 0, prizesPaid: 0, ticketsSold: 0, bigWinner: null };
     
-    // 1. DETERMINE DEMAND BASED ON GAME TYPE
-    let demand = 0;
+    // 1. BASE DEMAND
+    const totalStores = getTotalActiveStores();
+    if (totalStores === 0) return sales;
     
-    if (game.type === 'pulltab') {
-        // PULL TAB LOGIC:
-        // Huge sales in BARS and GAS. Terrible in GROCERY.
-        // We iterate through chains to calculate specific demand
-        GameState.chains.forEach(chain => {
-            if (chain.activeStores > 0) {
-                let multiplier = 0;
-                if (chain.type === 'BAR') multiplier = 4.0;      // massive synergy
-                else if (chain.type === 'GAS') multiplier = 1.5; // good synergy
-                else if (chain.type === 'GROCERY') multiplier = 0.1; // terrible
-                
-                // Base sales: 300 pull tabs per week per store * multiplier
-                demand += chain.activeStores * 300 * multiplier;
-            }
-        });
-        
-        // No "New Release Hype" for pull tabs, they are flat steady earners
-        
-    } else {
-        // SCRATCH TICKET LOGIC (Standard):
-        const totalStores = getTotalActiveStores();
-        demand = totalStores * 120;
-        
-        // Scratch tickets benefit from "New Release Hype"
-        // (Degrades over time)
-        const weeksOld = (new Date(GameState.currentDate) - new Date(game.releaseDate)) / (1000 * 60 * 60 * 24 * 7);
-        const hype = Math.max(0.5, 2.0 - (weeksOld * 0.1)); // Starts at 2.0x, fades to 0.5x
-        demand *= hype;
-    }
+    // Base: 120 tickets/store
+    let demand = totalStores * 120;
+    
+   // 2. HYPE DECAY
+    const weeksOld = (new Date(GameState.currentDate) - new Date(game.releaseDate)) / (1000 * 60 * 60 * 24 * 7);
+    const hype = Math.max(0.4, 2.5 - (weeksOld * 0.15)); 
+    
+    // BRAND BOOST (New)
+    const brandBoost = GameState.office.brandMult || 1.0; 
 
-    // Apply Global Boosts
-    demand *= holidayBoost;
-    const hasMarketing = GameState.marketingCampaigns.some(c => c.active && c.targetGame === game.id);
-    if (hasMarketing) demand *= 1.5;
+    demand = demand * hype * brandBoost * holidayBoost;
     
-    // Randomize
-    const actualDemand = Math.floor(demand * (0.8 + Math.random() * 0.4));
+    // 3. APPLY VARIANCE (High volatility for scratchers = 25%)
+    // This ensures you never get the same number twice
+    const actualDemand = Math.floor(applyVariance(demand, 0.25));
+    
     sales.ticketsSold = Math.min(actualDemand, game.inventory);
     sales.revenue = sales.ticketsSold * game.price;
 
-    // 2. PRIZE LOGIC
-    if (game.type === 'pulltab') {
-        // Simple Margin Logic for Pull Tabs
-        // If profit margin is 25%, then 75% goes to prizes + randomness
-        const payoutRate = (1.0 - game.profitMargin);
-        const volatility = 0.9 + (Math.random() * 0.2); // Low volatility (0.9 - 1.1)
+    // 4. PRIZE LOGIC (Standard)
+    if (sales.ticketsSold > 0 && game.prizePoolRemaining > 0) {
+        const percentSold = sales.ticketsSold / game.inventory;
+        const expectedPayout = game.prizePoolRemaining * percentSold;
         
-        sales.prizesPaid = Math.floor(sales.revenue * payoutRate * volatility);
+        // Payouts also fluctuate! (Winners are random)
+        sales.prizesPaid = Math.floor(applyVariance(expectedPayout, 0.3));
+        if (sales.prizesPaid > game.prizePoolRemaining) sales.prizesPaid = game.prizePoolRemaining;
         
-    } else {
-        // SCRATCH TICKET PRIZE LOGIC (Existing complex pool logic)
-        // ... (Keep your existing scratch logic here, or copy/paste the block below) ...
-        
-        if (sales.ticketsSold > 0 && game.prizePoolRemaining > 0) {
-            const percentSold = sales.ticketsSold / game.inventory;
-            const expectedPayout = game.prizePoolRemaining * percentSold;
-            const volatility = (Math.random() + Math.random()) * 1.2;
-            let actualSmallPayout = Math.floor(expectedPayout * volatility);
-            if (actualSmallPayout > game.prizePoolRemaining) actualSmallPayout = game.prizePoolRemaining;
-            sales.prizesPaid += actualSmallPayout;
-            game.prizePoolRemaining -= actualSmallPayout;
-        }
+        game.prizePoolRemaining -= sales.prizesPaid;
+    }
 
-        if (game.jackpotsRemaining > 0 && sales.ticketsSold > 0) {
-            const oddsPerTicket = game.jackpotsRemaining / game.inventory;
-            if (Math.random() < (oddsPerTicket * sales.ticketsSold)) {
-                sales.bigWinner = game.topPrize;
-                sales.prizesPaid += game.topPrize;
-                game.jackpotsRemaining--;
-            }
+    // Check for Jackpots
+    if (game.jackpotsRemaining > 0 && sales.ticketsSold > 0) {
+        const oddsPerTicket = game.jackpotsRemaining / game.inventory;
+        if (Math.random() < (oddsPerTicket * sales.ticketsSold)) {
+            sales.bigWinner = game.topPrize;
+            sales.prizesPaid += game.topPrize;
+            game.jackpotsRemaining--;
         }
     }
 
-    // Update Game State
     game.inventory -= sales.ticketsSold;
     game.totalSold += sales.ticketsSold;
     game.totalRevenue += sales.revenue;
@@ -415,8 +399,8 @@ function updateAllUI() {
     
     // 3. Secondary Updates (May not be built yet)
     // We use checks here to prevent crashes if you haven't written these functions yet
-    if (typeof updateRetailersPage === 'function') {
-        try { updateRetailersPage(); } catch(e) { console.error("Retailer UI error:", e); }
+    if (typeof updateRetailerPage === 'function') {
+        try { updateRetailerPage(); } catch(e) { console.error("Retailer UI error:", e); }
     }
     
     if (typeof updateAnalyticsPage === 'function') {
@@ -428,157 +412,161 @@ function updateAllUI() {
     }
 }
 
-// =====================================================
-// PLACEHOLDER FUNCTIONS
-// (These prevent crashes until you build the real features)
-// =====================================================
 
-function updateRetailersPage() {
+
+function updateRetailerPage() {
     const container = document.querySelector('#retailers');
     if (!container) return;
     
-    const totalStores = getTotalActiveStores();
-    const activeChains = GameState.chains.filter(c => c.tier > 0).length;
-    
-    // ESTIMATED MARKET CAP: 3,500 Retailers in the state
-    const marketCap = 3500;
-    const coveragePct = Math.min(100, (totalStores / marketCap) * 100).toFixed(1);
-    
+    const office = GameState.office || { tier: 1 };
+    const currentTier = office.tier;
+
+    // Calc Network Stats
+    let totalStores = 0;
+    let totalCommRate = 0;
+    let activeChainCount = 0;
+
+    GameState.chains.forEach(c => {
+        if (c.active) {
+            totalStores += c.activeStores;
+            totalCommRate += c.contract.commission;
+            activeChainCount++;
+        }
+    });
+
+    const avgComm = activeChainCount > 0 ? (totalCommRate / activeChainCount) * 100 : 0;
+
     let html = `
-        <h2>CORPORATE ACCOUNTS</h2>
         <div class="page-section">
-            <div class="quick-stats" style="grid-template-columns: repeat(3, 1fr);">
-                <div class="quick-stat-card">
-                    <div class="quick-stat-label">Total Locations</div>
-                    <div class="quick-stat-value">${totalStores.toLocaleString()}</div>
-                </div>
-                <div class="quick-stat-card">
-                    <div class="quick-stat-label">Active Partners</div>
-                    <div class="quick-stat-value">${activeChains} <span style="font-size: 0.5em; color: #888;">/ ${GameState.chains.length}</span></div>
-                </div>
-                <div class="quick-stat-card">
-                    <div class="quick-stat-label">Market Coverage</div>
-                    <div class="quick-stat-value">${coveragePct}%</div>
-                    <div class="quick-stat-change" style="font-size: 0.7em; color: #888;">Target: 3,500 Stores</div>
+            <div class="dashboard-card" style="background: #1a1a2e; border-bottom: 4px solid #2196F3; margin-bottom: 25px;">
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <div>
+                        <h2 style="margin:0;">RETAIL PARTNERS</h2>
+                        <div style="color: #888; font-size: 0.9em;">Manage distribution network.</div>
+                    </div>
+                    <div style="text-align: right; font-size: 0.9em;">
+                        <div style="color: #ccc;">Active Stores: <strong style="color: #fff;">${totalStores}</strong></div>
+                        <div style="color: #ccc;">Avg Commission: <strong style="color: #f4d03f;">${avgComm.toFixed(1)}%</strong></div>
+                    </div>
                 </div>
             </div>
-        </div>
-        
-        <div class="page-section">
-            <h3>Partnership Opportunities</h3>
-            <div class="dashboard-grid">
+            <div class="chain-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 20px;">
     `;
-    
-    // Sort: Active partners first, then by size
-    const sortedChains = [...GameState.chains].sort((a, b) => {
-        if (a.tier !== b.tier) return b.tier - a.tier; // Higher tier first
-        return b.totalStores - a.totalStores; // Bigger chains first
-    });
-    
-    sortedChains.forEach(chain => {
-        // Ensure stats exist to prevent crash
-        const stats = chain.stats || { totalSales: 0, totalCommission: 0, totalProfit: 0 };
-        
-        // Determine status style
-        let statusColor = '#444';
-        let statusText = 'NO CONTRACT';
-        let btnText = "NEGOTIATE CONTRACT";
-        let btnAction = `openNegotiation('${chain.id}')`;
-        let btnClass = 'btn';
-        let infoText = `${chain.totalStores} Locations Available`;
-        let opacity = '1.0';
-        
-        if (chain.tier === 1) {
-            statusColor = '#f4d03f';
-            statusText = 'PILOT PROGRAM';
-            btnText = "NEGOTIATE EXPANSION";
-            infoText = `Active: 5 / ${chain.totalStores} Stores`;
-        } else if (chain.tier === 2) {
-            statusColor = '#2196F3';
-            statusText = 'REGIONAL PARTNER';
-            btnText = "NEGOTIATE STATEWIDE";
-            infoText = `Active: ${chain.activeStores} / ${chain.totalStores} Stores`;
-        } else if (chain.tier === 3) {
-            statusColor = '#4CAF50';
-            statusText = 'EXCLUSIVE PARTNER';
-            btnText = 'MAXIMUM SATURATION';
-            btnAction = ''; // No action
-            btnClass = 'btn'; 
-            infoText = `All ${chain.totalStores} Stores Active`;
-        } else {
-            // Grey out inactive chains slightly
-            opacity = '0.7';
-        }
-        
-        // Button Styling (Disable negotiation button if maxed out)
-        let btnStyle = "width: 100%; font-size: 0.8em; padding: 10px; margin-top: 15px;";
-        if(chain.tier === 3) btnStyle += " background: #222; border-color: #444; color: #888; cursor: default;";
 
-        // --- PULL TAB BUTTON LOGIC ---
-        let ptButton = '';
-        if (chain.activeStores > 0) {
-            const machines = chain.pullTabStores || 0;
-            ptButton = `
-                <button class="small-btn" style="width: 100%; margin-top: 5px; border-color: #e65100; color: #e65100; background: transparent;" onclick="openPullTabMgmt('${chain.id}')">
-                    🔌 PULL TABS (${machines}/${chain.activeStores})
-                </button>
-            `;
+    GameState.chains.forEach(chain => {
+        // 1. LOCK LOGIC
+        let isLocked = false;
+        let lockReason = "";
+        
+        if (chain.type === 'BAR' && currentTier < 2) {
+            isLocked = true;
+            lockReason = "Requires Tier 2 (Regional Ops)";
+        } else if (chain.type === 'GROCERY' && currentTier < 3) {
+            isLocked = true;
+            lockReason = "Requires Tier 3 (State HQ)";
         }
 
-        // --- LOTTO BUTTON LOGIC ---
-        let lottoButton = '';
-        if (chain.activeStores > 0) {
-            const terminals = chain.lottoMachines || 0;
-            lottoButton = `
-                <button class="small-btn" style="width: 100%; margin-top: 5px; border-color: #E91E63; color: #E91E63; background: transparent;" onclick="openLottoMgmt('${chain.id}')">
-                    📡 LOTTO TERMINALS (${terminals}/${chain.activeStores})
-                </button>
-            `;
+        if (isLocked) {
+            html += `
+                <div class="chain-card locked" style="background: #111; border: 1px solid #333; padding: 20px; opacity: 0.6; position: relative;">
+                    <div style="filter: blur(2px);">
+                        <h3 style="color: #666;">${chain.name}</h3>
+                        <div style="color: #444;">${chain.totalStores} Locations</div>
+                    </div>
+                    <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); text-align: center; width: 100%;">
+                        <div style="background: #000; padding: 5px 10px; border: 1px solid #555; display: inline-block; color: #ff4444; font-weight: bold; font-size: 0.8em;">🔒 LOCKED</div>
+                        <div style="color: #ccc; font-size: 0.8em; margin-top: 5px;">${lockReason}</div>
+                    </div>
+                </div>`;
+            return;
         }
+
+        // 2. ACTIVE vs UNSIGNED
+        const isActive = chain.active;
+        const color = isActive ? '#4CAF50' : '#888';
+        const border = isActive ? '2px solid #4CAF50' : '1px solid #444';
+        const commRate = chain.contract ? (chain.contract.commission * 100).toFixed(1) : "5.0";
 
         html += `
-            <div class="dashboard-card" style="border-top: 4px solid ${statusColor}; opacity: ${opacity}; transition: opacity 0.2s;">
-                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
-                    <div style="font-size: 2em;">${chain.icon}</div>
-                    <div style="text-align: right;">
-                        <div style="font-size: 0.7em; color: ${statusColor}; font-weight: bold; letter-spacing: 1px;">${statusText}</div>
-                        <div style="font-size: 0.8em; color: #888;">${chain.type}</div>
-                    </div>
-                </div>
-                
-                <h4 style="margin: 0 0 5px 0;">${chain.name}</h4>
-                <div style="color: #ccc; font-size: 0.85em; margin-bottom: 15px; border-bottom: 1px solid #333; padding-bottom: 10px;">
-                    ${infoText}
-                </div>
-                
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 0.8em; margin-bottom: 10px; background: #111; padding: 10px; border-radius: 4px;">
+            <div class="chain-card" style="background: #16213e; border: ${border}; padding: 15px; position: relative;">
+                <div style="display: flex; justify-content: space-between; align-items: start; margin-bottom: 15px;">
                     <div>
-                        <div style="color: #888;">Total Sales</div>
-                        <div style="color: #fff;">$${Math.floor(stats.totalSales).toLocaleString()}</div>
+                        <h3 style="margin: 0; color: #fff;">${chain.name}</h3>
+                        <div style="font-size: 0.8em; color: #aaa;">${chain.type} • ${chain.totalStores} Locations</div>
                     </div>
                     <div style="text-align: right;">
-                        <div style="color: #888;">Commission</div>
-                        <div style="color: #ff9800;">$${Math.floor(stats.totalCommission).toLocaleString()}</div>
-                    </div>
-                    <div style="margin-top: 5px;">
-                        <div style="color: #888;">Net Profit</div>
-                        <div style="color: #4CAF50;">$${Math.floor(stats.totalProfit).toLocaleString()}</div>
+                         ${isActive 
+                            ? `<span style="background: #4CAF50; color: #000; padding: 2px 6px; border-radius: 4px; font-weight: bold; font-size: 0.7em;">PARTNER</span>` 
+                            : `<span style="border: 1px solid #888; color: #888; padding: 2px 6px; border-radius: 4px; font-size: 0.7em;">UNSIGNED</span>`}
                     </div>
                 </div>
-
-                <button class="${btnClass}" style="${btnStyle}" onclick="${btnAction}" onmouseover="this.parentElement.style.opacity='1'" onmouseout="if(${chain.tier} === 0) this.parentElement.style.opacity='0.7'">
-                    ${btnText}
-                </button>
-                
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 5px; margin-top: 5px;">
-                    ${ptButton}
-                    ${lottoButton}
-                </div>
-            </div>
         `;
+
+        if (!isActive) {
+            // ESTIMATED COST FIX: Match logic in openNegotiation
+            // Pilot Program (5 stores) * Setup Cost
+            const pilotCost = 5 * chain.setupCostPerStore;
+            
+            html += `
+                <div style="background: #111; padding: 10px; font-size: 0.9em; margin-bottom: 15px;">
+                    <div style="color: #ccc;">Commission Demand: <strong style="color: #fff;">~5.0%</strong></div>
+                    <div style="color: #ccc;">Market Reach: <strong style="color: #fff;">${chain.totalStores} Stores</strong></div>
+                </div>
+                <button class="btn" onclick="openNegotiation('${chain.id}')" style="width: 100%; background: #2196F3;">
+                    NEGOTIATE CONTRACT<br><span style="font-size: 0.8em;">Pilot Cost: $${pilotCost.toLocaleString()}</span>
+                </button>
+            `;
+        } else {
+            // ... (Management View - Identical to previous) ...
+             const activeStores = chain.activeStores || 0;
+            const lottoMachines = chain.lottoMachines || 0;
+            const pullTabStores = chain.pullTabStores || 0;
+            const stats = chain.stats || { totalSales: 0, totalProfit: 0 };
+
+            html += `
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; font-size: 0.8em; margin-bottom: 15px;">
+                    <div style="background: #111; padding: 8px;">
+                        <div style="color:#aaa;">Scratch Retailers</div>
+                        <div style="font-size: 1.1em; color: #fff;">${activeStores} / ${chain.totalStores}</div>
+                        ${activeStores < chain.totalStores 
+                            ? `<button class="small-btn" onclick="promoteChain('${chain.id}')" style="margin-top:5px; width:100%; font-size:0.9em;">+ Expand</button>` 
+                            : `<div style="color:#4CAF50; font-size:0.8em; margin-top:5px;">Fully Stocked</div>`
+                        }
+                    </div>
+                    <div style="background: #111; padding: 8px;">
+                        <div style="color:#aaa;">Lotto Terminals</div>
+                        <div style="font-size: 1.1em; color: #E91E63;">${lottoMachines}</div>
+                        ${lottoMachines < activeStores 
+                            ? `<button class="small-btn" onclick="openLottoMgmt('${chain.id}')" style="margin-top:5px; width:100%; font-size:0.9em; border-color: #E91E63; color: #E91E63;">+ Terminal</button>` 
+                            : `<div style="color:#E91E63; font-size:0.8em; margin-top:5px;">Maxed Out</div>`
+                        }
+                    </div>
+                    <div style="background: #111; padding: 8px; grid-column: span 2;">
+                        <div style="display: flex; justify-content: space-between;">
+                            <div>
+                                <div style="color:#aaa;">Pull Tab Vending</div>
+                                <div style="font-size: 1.1em; color: #FF9800;">${pullTabStores} units</div>
+                            </div>
+                            <div style="text-align: right;">
+                                ${pullTabStores < activeStores 
+                                    ? `<button class="small-btn" onclick="openPullTabMgmt('${chain.id}')" style="border-color: #FF9800; color: #FF9800;">+ Vending</button>` 
+                                    : `<span style="color:#FF9800; font-size:0.8em;">Maxed Out</span>`
+                                }
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div style="border-top: 1px solid #444; padding-top: 10px; font-size: 0.8em; color: #888; display: flex; justify-content: space-between;">
+                    <div>Lifetime Profit: <span style="color: #fff;">$${Math.floor(stats.totalProfit).toLocaleString()}</span></div>
+                    <div>Rate: ${commRate}%</div>
+                </div>
+            `;
+        }
+        
+        html += `</div>`; 
     });
-    
-    html += `</div></div>`;
+
+    html += `</div></div>`; 
     container.innerHTML = html;
 }
 
@@ -715,23 +703,114 @@ function updateNewsPage() {
 }
 
 function updateDashboard() {
-    // Basic dashboard stat updates
-    // Update the "Quick Stats" cards on the main dashboard
-    const moneyFormatter = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 2 });
-    
-    // 1. Budget
-    const budgetEls = document.querySelectorAll('.quick-stat-value');
-    if (budgetEls.length > 0) budgetEls[0].textContent = `$${(GameState.budget / 1000000).toFixed(2)}M`;
-    
-    // 2. Active Games
+    // 1. QUICK STATS (Top Row)
     const activeGames = GameState.games.filter(g => g.active).length;
-    if (budgetEls.length > 1) budgetEls[1].textContent = activeGames;
+    const activeRetailers = getTotalActiveStores(); // Uses your helper
+    const weeklyRev = GameState.stats.weeklyRevenue || 0;
     
-    // 3. Retailers
-    if (budgetEls.length > 2) budgetEls[2].textContent = GameState.retailers.length;
+    // Update the DOM elements by index (simple but effective for this layout)
+    const statValues = document.querySelectorAll('.quick-stat-value');
+    if (statValues.length >= 4) {
+        statValues[0].innerText = `$${(GameState.budget / 1000000).toFixed(2)}M`;
+        statValues[1].innerText = activeGames;
+        statValues[2].innerText = activeRetailers; // Now shows total stores, not just chains
+        statValues[3].innerText = `$${weeklyRev.toLocaleString()}`;
+    }
+
+    // 2. STARTUP CHECKLIST (Real Tracking)
+    const checklist = document.querySelector('.dashboard-header .margin-top-10'); // Finds the container
+    if (checklist) {
+        // Logic Checks
+        const hasGame = GameState.games.length > 0;
+        const hasRetailer = activeRetailers >= 10;
+        const hasSales = GameState.stats.totalRevenue > 100000;
+        const hasWinner = GameState.stats.totalPrizesPaid > 0;
+
+        // Re-render list
+        checklist.innerHTML = `
+            <div style="margin-bottom: 8px; color: ${hasGame ? '#4CAF50' : '#888'};">
+                ${hasGame ? '✅' : '☐'} Create at least one game
+            </div>
+            <div style="margin-bottom: 8px; color: ${hasRetailer ? '#4CAF50' : '#888'};">
+                ${hasRetailer ? '✅' : '☐'} Recruit 10+ retailer locations
+            </div>
+            <div style="margin-bottom: 8px; color: ${hasSales ? '#4CAF50' : '#888'};">
+                ${hasSales ? '✅' : '☐'} Make first $100K in sales
+            </div>
+            <div style="margin-bottom: 8px; color: ${hasWinner ? '#4CAF50' : '#888'};">
+                ${hasWinner ? '✅' : '☐'} Pay out first prize winner
+            </div>
+        `;
+    }
+
+    // 3. FINANCIAL GRID (Bottom)
+    // We need to calculate these buckets from the current game state
     
-    // 4. Weekly Revenue
-    if (budgetEls.length > 3) budgetEls[3].textContent = moneyFormatter.format(GameState.stats.weeklyRevenue);
+    // Committed = Unsold Inventory Value (Printing cost sunk)
+    let committed = 0; 
+    GameState.games.forEach(g => {
+        if(g.type === 'scratch') {
+            // Estimate remaining print cost value
+            committed += (g.inventory * 0.08); 
+        }
+    });
+
+    // Reserves = Money set aside for Jackpots (Instaplay/Draw) + Estimated scratch redemptions
+    let reserves = 0;
+    GameState.games.forEach(g => {
+        if (g.type === 'scratch') reserves += (g.prizePoolRemaining || 0);
+        if (g.type === 'instaplay' || g.type === 'draw') reserves += (g.currentJackpot || 0);
+    });
+
+    const finGrid = document.querySelectorAll('.dashboard-header .grid-template-columns div div');
+    // We target the VALUE divs specifically (every 2nd div in the grid sets)
+    // This is fragile DOM traversal, so let's stick to IDs if possible, but for now:
+    // Update text content of the values
+    const gridValues = document.querySelectorAll('.dashboard-header .grid-template-columns .quick-stat-value');
+    
+    // Safety check in case the grid HTML isn't exactly as expected
+    if (gridValues.length >= 3) {
+        // Available Funds (Budget) is handled by Header, but let's sync
+        // gridValues[0] is usually budget, already updated? No, let's explicit it:
+        const budgetBox = document.querySelectorAll('.dashboard-header .grid-template-columns div')[0].querySelector('.quick-stat-value');
+        if(budgetBox) budgetBox.innerText = `$${(GameState.budget / 1000000).toFixed(2)}M`;
+
+        // Committed (Inventory Value)
+        const commitBox = document.querySelectorAll('.dashboard-header .grid-template-columns div')[1].querySelector('.quick-stat-value');
+        if(commitBox) commitBox.innerText = `$${(committed / 1000).toFixed(1)}k`;
+
+        // Reserves (Prize Liability)
+        const reserveBox = document.querySelectorAll('.dashboard-header .grid-template-columns div')[2].querySelector('.quick-stat-value');
+        if(reserveBox) reserveBox.innerText = `$${(reserves / 1000000).toFixed(2)}M`;
+        
+        // Revenue (Week)
+        const revBox = document.querySelectorAll('.dashboard-header .grid-template-columns div')[3].querySelector('.quick-stat-value');
+        if(revBox) revBox.innerText = `$${weeklyRev.toLocaleString()}`;
+    }
+
+    // 4. ACTIVITY FEED (Live Events)
+    const feedContainer = document.querySelector('.activity-feed');
+    if (feedContainer) {
+        let html = `<h3>🚀 RECENT ACTIVITY</h3>`;
+        
+        // Take last 4 events from history
+        const recentEvents = GameState.history.events.slice(0, 5);
+        
+        if (recentEvents.length === 0) {
+            html += `<p style="color:#666;">No activity yet.</p>`;
+        } else {
+            recentEvents.forEach(e => {
+                html += `
+                    <div class="activity-item">
+                        <div><strong style="color: #f4d03f;">${e.title}</strong></div>
+                        <div style="color: #aaa; margin-top: 5px; font-size: 0.9em;">${e.description}</div>
+                        <div style="color: #666; font-size: 0.8em; margin-top: 2px;">${e.dateString}</div>
+                    </div>
+                `;
+            });
+        }
+        feedContainer.innerHTML = html;
+    }
 }
 function distributeChainSales(totalWeeklyRevenue) {
     const totalActive = getTotalActiveStores();
@@ -802,6 +881,7 @@ function returnToMenu() {
     if (confirm("Return to main menu? Unsaved progress will be lost.")) {
         document.getElementById('gameScreen').style.display = 'none';
         document.getElementById('mainMenu').style.display = 'flex';
+        checkSaveExists(); // <--- Add this
     }
 }
 
@@ -1075,29 +1155,21 @@ function updateGamesPage() {
     // TAB 1: LOTTERY (Scratch & Pull Tabs)
     // =====================================================
     if (lotteryContainer) {
-        // A. Scratch Tickets
         const scratchGames = GameState.games.filter(g => g.type === 'scratch' && g.active);
         
-        // B. Pull Tab Operations
-        // Only show if machines exist in the network
+        // Pull Tab Section
         let ptHtml = '';
         const totalMachines = GameState.chains.reduce((acc, c) => acc + (c.pullTabStores || 0), 0);
         
         if (totalMachines > 0) {
-            // Calculate network financials for display
             const h = GameState.financials.history; 
-            // Note: In a real app we'd want current week stats, but history is fine for a general dashboard
-            
             ptHtml = `
                 <div class="page-section" style="margin-top: 40px; border-top: 1px solid #333; padding-top: 20px;">
                     <h3>Pull Tab Operations</h3>
-                    <p style="color:#888; font-size: 0.9em; margin-bottom: 15px;">
-                        Automated Vending Network. 
-                    </p>
                     <div class="dashboard-card" style="background: #1a1a2e; border: 1px solid #e65100; padding: 20px;">
                         <div style="display: flex; justify-content: space-between; align-items: center;">
                             <div>
-                                <div style="color: #e65100; font-weight: bold;">NETWORK STATUS</div>
+                                <div style="color: #e65100; font-weight: bold;">NETWORK ACTIVE</div>
                                 <div style="font-size: 1.5em; color: #fff;">${totalMachines.toLocaleString()} <span style="font-size: 0.6em; color: #888;">Active Machines</span></div>
                             </div>
                             <div style="text-align: right;">
@@ -1109,36 +1181,53 @@ function updateGamesPage() {
                 </div>`;
         }
 
-        // Render Scratch List using helper or inline
+        // Scratch List
         let scratchHtml = '';
         if (scratchGames.length === 0) {
             scratchHtml = `<p style="color: #666; font-style: italic;">No active scratch tickets.</p>`;
         } else {
             scratchHtml = `<div class="game-list">`;
             scratchGames.forEach(game => {
-                const profit = game.totalRevenue - game.totalPrizes - game.printCost;
+                // CALCS
+                const totalExpenses = game.totalPrizes + game.printCost;
+                const profit = game.totalRevenue - totalExpenses;
                 const profitColor = profit >= 0 ? '#4CAF50' : '#ff4444';
                 const stockPct = (game.inventory / game.totalPrinted) * 100;
 
                 scratchHtml += `
                     <div class="game-card" style="background: #16213e; border: 1px solid #444; padding: 15px; margin-bottom: 15px; border-left: 4px solid ${profitColor};">
-                        <div style="display: flex; justify-content: space-between; margin-bottom: 10px;">
+                        
+                        <div style="display: flex; justify-content: space-between; margin-bottom: 10px; align-items: center;">
                             <div>
                                 <strong style="color: #f4d03f; font-size: 1.1em;">🎫 ${game.name}</strong>
                                 <span style="background: #000; padding: 2px 6px; border-radius: 4px; font-size: 0.8em; margin-left: 10px;">$${game.price}</span>
                             </div>
-                            <div style="color: ${profitColor}; font-weight: bold;">$${profit.toLocaleString()}</div>
+                            <div style="text-align: right;">
+                                <div style="color: ${profitColor}; font-weight: bold;">$${profit.toLocaleString()}</div>
+                                <div style="font-size: 0.7em; color: #888;">NET PROFIT</div>
+                            </div>
                         </div>
                         
-                        <div style="display: flex; justify-content: space-between; font-size: 0.8em; color: #ccc;">
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; font-size: 0.8em; margin-bottom: 8px; background: #222; padding: 8px; border-radius: 4px;">
+                            <div>
+                                <div style="color: #aaa;">Total Sales</div>
+                                <div style="color: #fff;">$${game.totalRevenue.toLocaleString()}</div>
+                            </div>
+                            <div style="text-align: right;">
+                                <div style="color: #aaa;">Total Expenses</div>
+                                <div style="color: #ff4444;">-$${totalExpenses.toLocaleString()}</div>
+                            </div>
+                        </div>
+
+                        <div style="display: flex; justify-content: space-between; font-size: 0.8em; color: #ccc; margin-bottom: 5px;">
+                            <div>Jackpots Left: <strong style="color: #f4d03f;">${game.jackpotsRemaining}</strong></div>
                             <div>Top Prize: $${game.topPrize.toLocaleString()}</div>
-                            <div>Sales: $${game.totalRevenue.toLocaleString()}</div>
                         </div>
                         
-                        <div style="margin-top: 10px; background: #000; height: 6px; border-radius: 3px; overflow: hidden;">
+                        <div style="margin-top: 5px; background: #000; height: 6px; border-radius: 3px; overflow: hidden;">
                             <div style="width: ${stockPct}%; background: #2196F3; height: 100%;"></div>
                         </div>
-                        <div style="text-align: right; font-size: 0.7em; color: #666; margin-top: 2px;">${game.inventory.toLocaleString()} remaining</div>
+                        <div style="text-align: right; font-size: 0.7em; color: #666; margin-top: 2px;">${game.inventory.toLocaleString()} / ${game.totalPrinted.toLocaleString()} tickets remaining</div>
                     </div>
                 `;
             });
@@ -1194,7 +1283,10 @@ function updateGamesPage() {
                                 <span style="background: #000; padding: 2px 6px; border-radius: 4px; font-size: 0.8em; margin-left: 10px;">$${game.price}</span>
                                 <span style="font-size: 0.7em; color: ${typeColor}; border: 1px solid ${typeColor}; padding: 1px 4px; margin-left: 5px; border-radius: 3px;">${typeLabel}</span>
                             </div>
-                            <div style="color: ${profitColor}; font-weight: bold;">$${profit.toLocaleString()}</div>
+                            <div style="text-align: right;">
+                                <div style="color: ${profitColor}; font-weight: bold;">$${profit.toLocaleString()}</div>
+                                <button onclick="deleteGame('${game.id}')" style="cursor:pointer; color: #ff4444; background: transparent; border: 1px solid #ff4444; border-radius: 4px; font-size: 0.7em; padding: 2px 6px; margin-top: 5px;">STOP</button>
+                            </div>
                         </div>
                         
                         <div style="display: flex; justify-content: space-between; align-items: flex-end;">
@@ -1233,8 +1325,6 @@ function updateGamesPage() {
             drawGames.forEach(game => {
                 const profit = game.totalRevenue - game.totalPrizes;
                 const profitColor = profit >= 0 ? '#4CAF50' : '#ff4444';
-                
-                // NEW: Get last week's sales (or 0 if new)
                 const weeklySales = game.lastWeekSales || 0;
                 
                 drawHtml += `
@@ -1244,7 +1334,10 @@ function updateGamesPage() {
                                 <strong style="color: #9C27B0; font-size: 1.1em;">📺 ${game.name}</strong>
                                 <span style="background: #000; padding: 2px 6px; border-radius: 4px; font-size: 0.8em; margin-left: 10px;">$${game.price}</span>
                             </div>
-                            <div style="color: ${profitColor}; font-weight: bold;">$${profit.toLocaleString()}</div>
+                            <div style="text-align: right;">
+                                <div style="color: ${profitColor}; font-weight: bold;">$${profit.toLocaleString()}</div>
+                                <button onclick="deleteGame('${game.id}')" style="cursor:pointer; color: #ff4444; background: transparent; border: 1px solid #ff4444; border-radius: 4px; font-size: 0.7em; padding: 2px 6px; margin-top: 5px;">STOP</button>
+                            </div>
                         </div>
                         
                         <div style="display: flex; justify-content: space-between; align-items: flex-end;">
@@ -1265,7 +1358,8 @@ function updateGamesPage() {
             drawHtml += `</div>`;
         }
         drawHtml += `</div>`;
-        
+
+        // Combine
         lottoContainer.innerHTML = instaHtml + drawHtml;
     }
 }
@@ -1579,7 +1673,7 @@ function commitPullTabInstall() {
     chain.pullTabStores += qty;
     
     document.getElementById('pullTabMgmtModal').style.display = 'none';
-    updateRetailersPage();
+    updateRetailerPage();
     updateAllUI(); // Refresh header budget
     alert(`Installed ${qty} Pull Tab machines in ${chain.name}.\nCost: $${cost.toLocaleString()}`);
 }
@@ -1750,35 +1844,36 @@ function submitOffer() {
     const success = roll < currentNegotiation.winChance;
     
     if (success) {
-        // APPLY DEAL
+        // 1. DEDUCT BUDGET
         GameState.budget -= totalCost;
+        if(GameState.financials && GameState.financials.currentWeek) {
+            GameState.financials.currentWeek.infrastructure += totalCost;
+        }
+
+        // 2. ACTIVATE CHAIN (This was missing!)
+        chain.active = true; // <--- CRITICAL FIX
         chain.contract.commission = comm / 100;
         
-        // Expand Tier
+        // 3. SET INITIAL TIER
+        // If they were Tier 0 (Unsigned), they become Tier 1 (Pilot)
         if (chain.tier === 0) {
             chain.tier = 1;
-            chain.activeStores = 5;
-        } else if (chain.tier === 1) {
-            chain.tier = 2;
-            chain.activeStores = Math.floor(chain.totalStores * 0.3);
-        } else {
-            chain.tier = 3;
-            chain.activeStores = chain.totalStores;
-        }
+            chain.activeStores = 5; // Start with 5 pilot stores
+        } 
         
         // Boost Relationship
         chain.relationship = Math.min(100, chain.relationship + 15);
         
-        alert(`AGREEMENT REACHED!\n\n${chain.name} accepted your terms.\nExpansion underway.`);
+        closeNegotiation();
+        updateAllUI(); // Will now render the "Partner" view
+        alert(`AGREEMENT REACHED!\n\n${chain.name} accepted your terms.\nStatus: ACTIVE PARTNER`);
+        
     } else {
         // FAIL
-        // Hurt Relationship
         chain.relationship = Math.max(0, chain.relationship - 10);
         alert(`OFFER REJECTED.\n\n${chain.name} was not impressed.\nRelationship dropped to ${chain.relationship}.`);
+        closeNegotiation();
     }
-    
-    closeNegotiation();
-    updateAllUI();
 }
 function openPullTabDesigner() {
     // Basic Madlib name generator for Pull Tabs
@@ -1874,14 +1969,16 @@ function simulatePullTabs(holidayBoost) {
             else if (chain.type === 'GAS') avgHandle = 1000; 
             else if (chain.type === 'GROCERY') avgHandle = 150; 
             
-            // Volume Logic: Higher payouts = more play time
+            // Volume Logic: Higher payouts = more play time = higher volume
+            // Base logic: If payout is 0.75, factor is ~1.4
             const playerSatisfaction = (config.payoutRate - 0.60) / 0.25; 
             const volumeFactor = 0.8 + (playerSatisfaction * 0.4);
             
             const chainHandle = chain.pullTabStores * avgHandle * volumeFactor * holidayBoost;
             
-            // Variance (+/- 15%)
-            const actualHandle = chainHandle * (0.85 + Math.random() * 0.3);
+            // APPLY VARIANCE (20% Swing)
+            // This prevents the number from being the same every week
+            const actualHandle = applyVariance(chainHandle, 0.20);
             
             totalHandle += actualHandle;
         }
@@ -1892,8 +1989,11 @@ function simulatePullTabs(holidayBoost) {
     GameState.pullTabConfig.active = true;
 
     // 2. Financial Breakdown
+    // Payouts are calculated on the ACTUAL handle for this week
     const payouts = totalHandle * config.payoutRate;
-    const maintenance = totalMachineCount * 50; // $50/machine operating cost
+    
+    // Maintenance: $50 per machine (Paper, Lease, Service)
+    const maintenance = totalMachineCount * 50; 
     
     return {
         handle: totalHandle,
@@ -1958,21 +2058,26 @@ function commitLottoInstall() {
     chain.lottoMachines += qty;
     
     document.getElementById('lottoMgmtModal').style.display = 'none';
-    updateRetailersPage();
+    updateRetailerPage();
     updateAllUI();
     alert(`Authorized ${qty} Secure Terminals for ${chain.name}.\nCost: $${cost.toLocaleString()}`);
 }
 function openInstaplayDesigner() {
+    if (GameState.office.tier < 2) {
+        alert("TECHNOLOGY LOCKED\nRequires Tier 2 (Regional Ops)");
+        return;
+    }
+
     const modal = document.getElementById('instaplayModal');
     if (!modal) return;
-    
     modal.style.display = 'block';
     
-    // Set some defaults
+    // Attach listener to dropdown if not already done (safe to do here)
+    document.getElementById('ipFlavor').onchange = updateInstaplayPreview;
+    
     generateInstaplayName();
-    updateInstaplayMath(); // <--- IMPORTANT: Run math on open
+    updateInstaplayPreview(); // Run once to set initial state
 }
-
 function publishInstaplay() {
     const name = document.getElementById('ipName').value;
     const price = parseInt(document.getElementById('ipPrice').value);
@@ -2053,81 +2158,112 @@ function generateInstaplayName() {
 function simulateInstaplaySales(game, holidayBoost) {
     const sales = { revenue: 0, prizesPaid: 0, jackpotHit: false };
 
-    // 1. Check Network
+    // 1. Network Check
     let totalTerminals = 0;
-    GameState.chains.forEach(c => totalTerminals += (c.lottoMachines || 0));
+    if (GameState.chains) {
+        GameState.chains.forEach(c => totalTerminals += (c.lottoMachines || 0));
+    }
+    
     if (totalTerminals === 0) return sales;
 
-    // 2. Determine Demand
-    // Volatility Logic:
-    // If Jackpot is HUGE relative to Base, demand skyrockets (Progressive only)
+    // 2. Determine Sales Volume
     let hype = 1.0;
-    if (game.flavor === 'progressive') {
+    
+    // Hype Logic (Progressive Only)
+    if (game.flavor === 'progressive' && game.baseJackpot > 0) {
         const multiple = game.currentJackpot / game.baseJackpot;
-        // Hype scales with jackpot size
         hype = Math.min(15, Math.max(1, multiple)); 
     }
+    
+    // --- BUG FIX IS HERE ---
+    // We calculate Total Payout % by adding Small Prizes + Jackpot Funding
+    // If those are missing (old save), we default to 65% total.
+    const effectivePayout = (game.smallPrizePct || 60) + (game.jackpotFundPct || 5);
+    
+    // Quality Modifier: Range 0.9x to 1.1x impact based on generosity
+    const quality = 1 + ((effectivePayout - 65) / 100); 
+    // -----------------------
 
-    const baseDemand = totalTerminals * 50;
-    // Demand Variance
-    const demand = baseDemand * hype * holidayBoost;
-    const ticketsSold = Math.floor(demand * (0.8 + Math.random() * 0.4));
+    const baseDemandPerTerminal = game.flavor === 'steady' ? 80 : 40;
+    const rawDemand = totalTerminals * baseDemandPerTerminal;
+    
+    // Apply Multipliers
+    let demand = rawDemand * hype * quality * holidayBoost;
+
+    // Variance
+    const ticketsSold = Math.floor(applyVariance(demand, 0.25));
     
     sales.revenue = ticketsSold * game.price;
 
-    // 3. EXPENSES (Using Specific Sliders)
+    const smallRate = (game.smallPrizePct || 60) / 100;
+    const smallPrizes = sales.revenue * smallRate;
     
-    // A. Small Prizes (The "Churn" Slider)
-    // If user set 0%, this is 0. If 70%, it's high.
-    const smallPrizes = sales.revenue * (game.smallPrizePct / 100);
+    // LOGIC FIX: Force 0 contribution if steady
+    let fundRate = (game.jackpotFundPct || 5) / 100;
+    if (game.flavor === 'steady') fundRate = 0; 
     
-    // B. Jackpot Funding (The "Growth" Slider)
-    // If user set 70%, pot grows massive fast.
-    const potContribution = sales.revenue * (game.jackpotFundPct / 100);
-    game.currentJackpot += potContribution;
-    
-    // Total immediate expense for us
-    sales.prizesPaid = smallPrizes + potContribution;
+    const potContribution = sales.revenue * fundRate;
 
-    // 4. WIN CHECK (Using Specific Odds)
-    // Use the exact odds the user set (e.g., 5000)
-    const hitChance = ticketsSold / game.winOdds;
-
-    if (Math.random() < hitChance) {
-        sales.jackpotHit = true;
-        
-        // Reset Logic:
-        // We pay the Base Jackpot to re-seed.
-        // We do NOT pay the currentJackpot from budget (it was pre-funded).
-        const reseedCost = game.baseJackpot;
-        sales.prizesPaid += reseedCost; 
-        
-        game.currentJackpot = game.baseJackpot;
+    // 4. WIN CHECK
+    const odds = game.winOdds || 10000;
+    // Safety check for div by zero
+    if (odds > 0) {
+        const hitChance = ticketsSold / odds;
+        if (Math.random() < hitChance) {
+            sales.jackpotHit = true;
+            const reseedCost = game.baseJackpot;
+            sales.prizesPaid += reseedCost; 
+            game.currentJackpot = game.baseJackpot;
+        }
     }
 
-    // Stats
     game.totalRevenue += sales.revenue;
     game.totalPrizes += sales.prizesPaid;
 
     return sales;
+}   
+function deleteGame(gameId) {
+    const game = GameState.games.find(g => g.id === gameId);
+    if (!game) return;
+
+    if (!confirm(`Are you sure you want to decommission "${game.name}"?\n\nThis will permanently stop sales and remove it from the dashboard.`)) {
+        return;
+    }
+
+    // Remove from the array
+    GameState.games = GameState.games.filter(g => g.id !== gameId);
+    
+    // Refresh UI
+    updateAllUI();
+    // Force switch to lotto tab so you see it disappear
+    showGameTab('lotto'); 
 }
 function updateInstaplayPreview() {
     const flavor = document.getElementById('ipFlavor').value;
-    const desc = document.getElementById('ipFlavorDesc');
-    const model = document.getElementById('ipSalesModel');
-    const type = document.getElementById('ipJackpotType');
-
+    const desc = document.getElementById('ipFlavorDesc'); // Note: Make sure this ID exists in your HTML if using it
+    
+    // New Logic for Hiding
+    const jackpotRow = document.getElementById('ipJackpotRow');
+    
     if (flavor === 'steady') {
-        desc.innerText = "Reliable weekly sales. No volatility. Acts like a digital scratcher.";
-        model.innerText = "Consistent / Flat";
-        model.style.color = "#4CAF50";
-        type.innerText = "Fixed Prize (Static)";
+        // Hide the progressive slider
+        if (jackpotRow) jackpotRow.style.display = 'none';
+        
+        // Force the value to 0 for calculations
+        document.getElementById('ipJackpotPct').value = 0;
+        
     } else {
-        desc.innerText = "Sales start low but explode as jackpot grows. High Volatility.";
-        model.innerText = "Hype-Driven / Volatile";
-        model.style.color = "#E91E63";
-        type.innerText = "Progressive (Rolling)";
+        // Show the slider
+        if (jackpotRow) jackpotRow.style.display = 'block';
+        
+        // Reset to default if it was 0
+        if (document.getElementById('ipJackpotPct').value == 0) {
+            document.getElementById('ipJackpotPct').value = 5;
+        }
     }
+    
+    // Trigger the math update to refresh the text/stats
+    updateInstaplayMath();
 }
 function updateInstaplayMath() {
     // 1. Get Values
@@ -2182,6 +2318,12 @@ let currentPrizeTiers = [
 ];
 
 function openDrawGameDesigner() {
+    // LOCK CHECK
+    if (GameState.office.tier < 3) {
+        alert("BROADCAST LOCKED\n\nYour current facility does not have a secure studio environment.\n\nUpgrade to Tier 3 (State Headquarters) to launch TV Draw Games.");
+        return;
+    }
+    
     document.getElementById('drawGameModal').style.display = 'block';
     renderPrizeTable();
 }
@@ -2317,59 +2459,68 @@ function publishDrawGame() {
 function simulateDrawGame(game, holidayBoost) {
     const stats = { revenue: 0, prizesPaid: 0, events: [] };
     
-    // 1. Determine Weekly Sales Volume
     const retailers = getTotalActiveStores();
     if (retailers === 0) return stats;
     
-    // Hype Factor (Jackpot Fatigue vs Fever)
-    let hype = Math.pow(game.currentJackpot / game.baseJackpot, 1.5);
-    hype = Math.min(50, Math.max(1, hype)); 
-    
+    // 1. CALCULATE HYPE (The Exponential Curve)
+    const ratio = game.currentJackpot / game.baseJackpot;
+    let hype = 1.0;
+
+    if (ratio < 2) {
+        // Normal Growth
+        hype = ratio; 
+    } else if (ratio < 10) {
+        // Momentum Building (Power of 1.5)
+        hype = Math.pow(ratio, 1.5);
+    } else {
+        // JACKPOT FEVER (Viral Status - Power of 2.2)
+        // Once it passes 10x, people who don't gamble start buying
+        hype = Math.pow(ratio, 2.2);
+    }
+
+    // Cap hype at 100x to prevent integer overflow/game breaking
+    hype = Math.min(100, hype);
+
+    // 2. BASE DEMAND
     const baseWeeklyTickets = retailers * 200;
-    const totalWeeklyTickets = Math.floor(baseWeeklyTickets * hype * holidayBoost);
+    let totalDemand = baseWeeklyTickets * hype * holidayBoost;
+    
+    // 3. APPLY VARIANCE (15% Swing)
+    const totalWeeklyTickets = Math.floor(applyVariance(totalDemand, 0.15));
     
     stats.revenue = totalWeeklyTickets * game.price;
-    game.lastWeekSales = stats.revenue; // <--- NEW: Saved for UI
+    game.lastWeekSales = stats.revenue;
     
-    // 2. Fixed Costs (Broadcast) -> Handled in simulateWeek as Maintenance
-    
-    // 3. Process The Draws
+    // 4. DRAW PROCESS
     const ticketsPerDraw = Math.floor(totalWeeklyTickets / game.drawFreq);
     
     for (let i = 0; i < game.drawFreq; i++) {
-        // A. Fixed Tier Payouts (Instant cash expenses)
+        // A. Fixed Tiers
         game.tiers.forEach(tier => {
             if (!tier.isJackpot) {
-                const winners = Math.floor(ticketsPerDraw / tier.odds);
-                stats.prizesPaid += winners * tier.prize;
+                // Winners fluctuate too!
+                const theoreticalWinners = ticketsPerDraw / tier.odds;
+                const actualWinners = Math.floor(applyVariance(theoreticalWinners, 0.1));
+                stats.prizesPaid += actualWinners * tier.prize;
             }
         });
 
-        // B. Jackpot Contribution (The Reserve Model)
-        // We "spend" this money now to fund the pot, so it doesn't kill us later.
+        // B. Jackpot Growth
         const drawRevenue = ticketsPerDraw * game.price;
-        const growth = drawRevenue * 0.30; // 30% goes to pot
+        const growth = drawRevenue * 0.30; 
         
         game.currentJackpot += growth;
-        stats.prizesPaid += growth; // <--- CRITICAL: Expense it now!
+        stats.prizesPaid += growth; 
         
         // C. Jackpot Win Check
         const jackpotTier = game.tiers.find(t => t.isJackpot);
-        const winners = Math.floor(ticketsPerDraw / jackpotTier.odds);
+        // Using raw odds here (no variance on the math check itself)
+        const partialWinChance = (ticketsPerDraw / jackpotTier.odds);
         
-        // Random Probability for edge cases
-        const partialWinChance = (ticketsPerDraw / jackpotTier.odds) % 1;
-        let hit = winners > 0 || Math.random() < partialWinChance;
-
-        if (hit) {
-            // WINNER!
-            // We DO NOT pay game.currentJackpot here. It's already funded.
+        // Poisson-ish approximation for winning
+        if (Math.random() < partialWinChance) {
             stats.events.push(`JACKPOT HIT! $${Math.floor(game.currentJackpot).toLocaleString()} won on ${game.name}`);
-            
-            // We ONLY pay to re-seed the new pot
             stats.prizesPaid += game.baseJackpot; 
-            
-            // Reset
             game.currentJackpot = game.baseJackpot;
         }
     }
@@ -2378,4 +2529,234 @@ function simulateDrawGame(game, holidayBoost) {
     game.totalPrizes += stats.prizesPaid;
     
     return stats;
+}
+function saveGame() {
+    try {
+        // 1. Serialize State
+        const json = JSON.stringify(GameState, null, 2); // Pretty print for readability
+        
+        // 2. Create Blob
+        const blob = new Blob([json], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        
+        // 3. Generate Filename (e.g. "lottery_save_Week_12.json")
+        const filename = `lottery_save_Week_${GameState.week}.json`;
+        
+        // 4. Trigger Download
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        
+        // Cleanup
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        
+    } catch (e) {
+        console.error("Save export failed:", e);
+        alert("Error: Could not generate save file.");
+    }
+}
+
+function loadGameFromFile(inputElement) {
+    const file = inputElement.files[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    
+    reader.onload = function(e) {
+        try {
+            const json = e.target.result;
+            
+            // 1. Parse JSON with Date Reviver
+            const parsedState = JSON.parse(json, (key, value) => {
+                if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T/.test(value)) {
+                    return new Date(value);
+                }
+                return value;
+            });
+
+            // 2. Load State
+            Object.assign(GameState, parsedState);
+
+            // 3. Switch Screens
+            document.getElementById('mainMenu').style.display = 'none';
+            document.getElementById('gameScreen').style.display = 'block';
+            
+            // 4. Refresh UI
+            updateAllUI();
+            showPage('dashboard');
+            
+            // 5. Reset the input so you can load the same file again if needed
+            inputElement.value = '';
+            
+            alert(`Game Loaded: Week ${GameState.week}`);
+
+        } catch (err) {
+            console.error("Load failed:", err);
+            alert("Error: Invalid Save File.");
+        }
+    };
+
+    reader.readAsText(file);
+}
+
+// Update Return to Menu to just go back (no check needed)
+function returnToMenu() {
+    if (confirm("Return to main menu? Unsaved progress will be lost.")) {
+        document.getElementById('gameScreen').style.display = 'none';
+        document.getElementById('mainMenu').style.display = 'flex';
+    }
+}
+const OFFICE_TIERS = [
+    { 
+        tier: 1, 
+        name: "Administrative Office", 
+        cost: 0, 
+        upkeep: 2000, 
+        maxGames: 5, 
+        maxMachines: 0, 
+        brandMult: 1.0,
+        desc: "Unlocks Gas Stations (Scratchers Only)." 
+    },
+    { 
+        tier: 2, 
+        name: "Regional Operations", 
+        cost: 40000, 
+        upkeep: 8500, 
+        maxGames: 12, 
+        maxMachines: 250, 
+        brandMult: 1.1, 
+        desc: "Unlocks Bars (Pull Tabs) & Instaplay." 
+    },
+    { 
+        tier: 3, 
+        name: "State Headquarters", 
+        cost: 150000, 
+        upkeep: 25000, 
+        maxGames: 40, 
+        maxMachines: 2500, 
+        brandMult: 1.25, 
+        desc: "Unlocks Grocery Chains & TV Draws." 
+    },
+    { 
+        tier: 4, 
+        name: "Multi-State Commission", 
+        cost: 1000000, 
+        upkeep: 75000, 
+        maxGames: 999, 
+        maxMachines: 99999, 
+        brandMult: 1.5, 
+        desc: "Unlimited Capacity." 
+    }
+];
+function openHQModal() {
+    try {
+        const modal = document.getElementById('hqModal');
+        if (!modal) {
+            console.error('HQ Modal element not found in DOM');
+            return;
+        }
+        
+        // Auto-fix for saves without office data
+        if (!GameState.office) GameState.office = JSON.parse(JSON.stringify(OFFICE_TIERS[0]));
+
+        const current = GameState.office;
+        const tierConfig = OFFICE_TIERS.find(t => t.tier === current.tier) || OFFICE_TIERS[0];
+        const nextTier = OFFICE_TIERS.find(t => t.tier === current.tier + 1);
+
+        // 1. Status
+        const hqName = document.getElementById('hqName');
+        if (hqName) hqName.innerText = `Tier ${current.tier}: ${current.name}`;
+        
+        const hqUpkeep = document.getElementById('hqUpkeep');
+        const upkeepAmount = current.baseUpkeep || current.upkeep || 0;
+        if (hqUpkeep) hqUpkeep.innerText = `-$${upkeepAmount.toLocaleString()} / week`;
+        
+        const hqBonus = document.getElementById('hqBonus');
+        if (hqBonus) hqBonus.innerText = `Brand Impact: ${tierConfig.brandMult}x Sales`;
+        
+        const hqTech = document.getElementById('hqTech');
+        if (hqTech) hqTech.innerText = tierConfig.desc;
+        
+        // 2. Bars
+        const activeGames = (GameState.games && Array.isArray(GameState.games)) ? GameState.games.filter(g => g.active).length : 0;
+        const hqCapGames = document.getElementById('hqCapGames');
+        if (hqCapGames) hqCapGames.innerText = `${activeGames} / ${current.maxGames}`;
+        
+        const hqBarGames = document.getElementById('hqBarGames');
+        if (hqBarGames) hqBarGames.style.width = Math.min(100, (activeGames/current.maxGames)*100) + '%';
+        
+        let activeMachines = 0;
+        if (GameState.chains && Array.isArray(GameState.chains)) {
+            GameState.chains.forEach(c => activeMachines += (c.pullTabStores || 0) + (c.lottoMachines || 0));
+        }
+        const maxMach = current.maxMachines;
+        
+        const hqCapMachines = document.getElementById('hqCapMachines');
+        if (hqCapMachines) hqCapMachines.innerText = `${activeMachines.toLocaleString()} / ${maxMach.toLocaleString()}`;
+        
+        // Handle 0/0 edge case for bar width
+        const machPct = maxMach > 0 ? (activeMachines/maxMach)*100 : 100;
+        const hqBarMachines = document.getElementById('hqBarMachines');
+        if (hqBarMachines) hqBarMachines.style.width = Math.min(100, machPct) + '%';
+
+        // 3. Upgrade
+        const upgDiv = document.getElementById('hqUpgradeContainer');
+        if (upgDiv && nextTier) {
+            upgDiv.style.display = 'flex';
+            const nextTierName = document.getElementById('nextTierName');
+            if (nextTierName) nextTierName.innerText = `Tier ${nextTier.tier}: ${nextTier.name}`;
+            
+            const nextTierCost = document.getElementById('nextTierCost');
+            if (nextTierCost) nextTierCost.innerText = `$${nextTier.cost.toLocaleString()}`;
+            
+            // Dynamic perks list
+            let perks = `<li>Capacity: ${nextTier.maxGames} Games, ${nextTier.maxMachines.toLocaleString()} Terminals</li>`;
+            perks += `<li>${nextTier.desc}</li>`;
+            perks += `<li>Brand Impact: ${(nextTier.brandMult * 100) - 100}% Boost</li>`;
+            
+            const nextTierPerks = document.getElementById('nextTierPerks');
+            if (nextTierPerks) nextTierPerks.innerHTML = perks;
+            
+            const btn = document.getElementById('btnUpgradeHQ');
+            if (btn) {
+                if (GameState.budget >= nextTier.cost) {
+                    btn.disabled = false;
+                    btn.style.opacity = '1';
+                } else {
+                    btn.disabled = true;
+                    btn.style.opacity = '0.5';
+                }
+            }
+        } else if (upgDiv) {
+            upgDiv.style.display = 'none';
+        }
+
+        modal.style.display = 'block';
+        modal.style.visibility = 'visible';
+    } catch (error) {
+        console.error('Error in openHQModal:', error);
+    }
+}
+function upgradeOffice() {
+    const currentTier = GameState.office.tier;
+    const nextTier = OFFICE_TIERS.find(t => t.tier === currentTier + 1);
+    
+    if (!nextTier || GameState.budget < nextTier.cost) return;
+    
+    GameState.budget -= nextTier.cost;
+    
+    // Apply properties
+    GameState.office.tier = nextTier.tier;
+    GameState.office.name = nextTier.name;
+    GameState.office.baseUpkeep = nextTier.upkeep;
+    GameState.office.maxGames = nextTier.maxGames;
+    GameState.office.maxMachines = nextTier.maxMachines;
+    GameState.office.brandMult = nextTier.brandMult; // <--- NEW
+    
+    openHQModal();
+    updateAllUI();
+    alert(`Expansion Complete!\nSales across the board will increase by ${((nextTier.brandMult-1)*100).toFixed(0)}%.`);
 }

@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0,0,0,0.85);
+        }
+        .modal-content {
+            background-color: #1a1a2e;
+            margin: 5% auto;
+            padding: 20px;
+            border: 2px solid #f4d03f;
+            width: 90%;
+            max-width: 900px;
+            color: white;
+        }
+    </style>
+</head>
+<body>
+    <button onclick="testModal()">Open Modal</button>
+    <div id="testModal" class="modal">
+        <div class="modal-content">
+            <h2>Test Modal</h2>
+            <p>If you see this, the modal is working!</p>
+            <button onclick="document.getElementById('testModal').style.display='none'">Close</button>
+        </div>
+    </div>
+    <script>
+        function testModal() {
+            const modal = document.getElementById('testModal');
+            console.log('Modal found:', modal);
+            modal.style.display = 'block';
+            console.log('Display set to:', modal.style.display);
+        }
+    </script>
+</body>
+</html>

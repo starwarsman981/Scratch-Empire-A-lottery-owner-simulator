@@ -13,7 +13,8 @@
             <p class="subtitle">A Lottery Owner Simulator</p>
             <div class="menu-buttons">
                 <button class="btn" onclick="startGame()">START NEW GAME</button>
-                <button class="btn" onclick="alert('Load game functionality coming soon!')">LOAD GAME</button>
+                <button class="btn" onclick="document.getElementById('saveFileInput').click()" style="background: #222; border-color: #444; margin-top: 15px;">LOAD FROM FILE</button>
+                <input type="file" id="saveFileInput" style="display: none;" accept=".json" onchange="loadGameFromFile(this)">
                 <button class="btn" onclick="alert('Options coming soon!')">OPTIONS</button>
                 <button class="btn" onclick="alert('Thanks for playing!')">CREDITS</button>
             </div>
@@ -49,13 +50,14 @@
                 <button class="nav-btn" onclick="showPage('retailers')">RETAILERS</button>
                 <button class="nav-btn" onclick="showPage('analytics')">ANALYTICS</button>
                 <button class="nav-btn" onclick="showPage('events')">NEWS</button>
+                <button class="small-btn" onclick="openHQModal()" > HQ</button>
                 <button class="nav-btn" onclick="showPage('inbox')">
                     INBOX <span id="unreadCount" class="unread-badge">3</span>
                 </button>
                 
                 <button class="nav-btn" style="background: #2E7D32; border-color: #4CAF50;" onclick="advanceWeek()">▶ NEXT WEEK</button>
-                
-                <button class="nav-btn" onclick="returnToMenu()">MENU</button>
+                <button class="small-btn" onclick="saveGame()" style="border-color: #4CAF50; color: #4CAF50; margin-right: 10px;">💾 </button>
+
             </div>
 
             <div id="dashboard" class="page active">
@@ -725,14 +727,13 @@
                     <div style="font-size: 0.7em; color: #888;">Allocated to churn prizes ($2, $5, $10 wins).</div>
                 </div>
 
-                <div class="form-group">
-                    <label style="display:flex; justify-content:space-between;">
-                        <span>Jackpot Contribution (Pot Growth)</span>
-                        <span id="dispJackpot" style="color: #E91E63;">5%</span>
-                    </label>
-                    <input type="range" id="ipJackpotPct" min="1" max="80" step="1" value="5" oninput="updateInstaplayMath()">
-                    <div style="font-size: 0.7em; color: #888;">% of sales added to the jackpot pool.</div>
-                </div>
+                <div class="form-group" id="ipJackpotRow"> <label style="display:flex; justify-content:space-between;">
+        <span>Jackpot Contribution (Pot Growth)</span>
+        <span id="dispJackpot" style="color: #E91E63;">5%</span>
+    </label>
+    <input type="range" id="ipJackpotPct" min="1" max="80" step="1" value="5" oninput="updateInstaplayMath()">
+    <div style="font-size: 0.7em; color: #888;">% of sales added to the jackpot pool.</div>
+</div>
 
                 <div class="form-group">
                     <label style="display:flex; justify-content:space-between;">
@@ -852,6 +853,65 @@
             </div>
 
             <button class="btn" style="width: 100%; margin-top: 20px; background: #4A148C; border-color: #9C27B0;" onclick="publishDrawGame()">ESTABLISH BROADCAST & LAUNCH</button>
+        </div>
+    </div>
+</div>
+<div id="hqModal" class="modal">
+    <div class="modal-content" style="max-width: 650px; border-color: #2196F3;">
+        <div class="modal-header" style="background: #0D47A1; border-bottom: 1px solid #2196F3;">
+            <h2 style="color: #fff;">OPERATIONS CENTER</h2>
+            <span class="close-btn" onclick="document.getElementById('hqModal').style.display='none'">&times;</span>
+        </div>
+        
+        <div style="padding: 25px;">
+            <div style="background: #222; padding: 20px; border-left: 4px solid #2196F3; margin-bottom: 20px;">
+                <div style="display: flex; justify-content: space-between; align-items: start;">
+                    <div>
+                        <div style="font-size: 0.8em; color: #888;">CURRENT FACILITY</div>
+                        <div id="hqName" style="font-size: 1.6em; font-weight: bold; color: #fff;">Tier 1: Admin Office</div>
+                    </div>
+                    <div style="text-align: right;">
+                        <div id="hqUpkeep" style="color: #ff4444; font-weight: bold;">-$4,000 / week</div>
+                        <div id="hqBonus" style="color: #4CAF50; font-size: 0.9em; margin-top: 5px;">Brand Impact: 1.0x</div>
+                    </div>
+                </div>
+                
+                <div style="margin-top: 15px; padding-top: 15px; border-top: 1px solid #444; color: #ccc; font-size: 0.9em;">
+                    <strong>Technology Access:</strong> <span id="hqTech" style="color: #fff;">Scratchers Only</span>
+                </div>
+            </div>
+
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 25px;">
+                <div class="dashboard-card" style="padding: 15px;">
+                    <div style="font-size: 0.8em; color: #aaa;">GAME LICENSES</div>
+                    <div id="hqCapGames" style="font-size: 1.2em; color: #fff;">0 / 5</div>
+                    <div class="progress-bar-bg" style="margin-top: 5px;">
+                        <div id="hqBarGames" class="progress-bar-fill" style="width: 0%; background: #2196F3;"></div>
+                    </div>
+                </div>
+                <div class="dashboard-card" style="padding: 15px;">
+                    <div style="font-size: 0.8em; color: #aaa;">SERVER CAPACITY (Terminals)</div>
+                    <div id="hqCapMachines" style="font-size: 1.2em; color: #fff;">0 / 0</div>
+                    <div class="progress-bar-bg" style="margin-top: 5px;">
+                        <div id="hqBarMachines" class="progress-bar-fill" style="width: 0%; background: #E91E63;"></div>
+                    </div>
+                </div>
+            </div>
+
+            <h4 style="border-bottom: 1px solid #444; padding-bottom: 5px; margin-bottom: 15px;">NEXT EXPANSION</h4>
+            <div id="hqUpgradeContainer" style="display: flex; justify-content: space-between; align-items: center; background: #16213e; padding: 15px; border: 1px solid #444;">
+                <div>
+                    <strong id="nextTierName" style="color: #2196F3; font-size: 1.1em;">Tier 2: Regional Ops</strong>
+                    <ul id="nextTierPerks" style="font-size: 0.8em; color: #ccc; margin-top: 5px; padding-left: 20px; line-height: 1.6;">
+                        <li>Unlocks Instaplay & Pull Tab Machines</li>
+                        <li>Unlocks Gas Station Chains</li>
+                        <li>Brand Reputation: +10% Sales</li>
+                    </ul>
+                </div>
+                <button id="btnUpgradeHQ" class="btn" onclick="upgradeOffice()" style="background: #2196F3; border-color: #64B5F6; min-width: 120px;">
+                    UPGRADE<br><span id="nextTierCost" style="font-size: 0.8em;">$50,000</span>
+                </button>
+            </div>
         </div>
     </div>
 </div>
